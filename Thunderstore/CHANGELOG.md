@@ -1,3 +1,13 @@
-| `Version` | `Update Notes`    |
-|-----------|-------------------|
-| 1.0.0     | - Initial Release |
+| `Version` | `Update Notes` |
+|-----------|----------------|
+| 1.0.0     | - First public release; declares Groups and Guilds incompatibility and adds Clan API v4 with server-authoritative primary/Guest membership lookup, retained primary-member-only ward authorization, and shared commit-time registry invalidation |
+| 0.6.1     | - Replaces the hidden `+`/`-` height toggle with a persistent upper-left drag handle that uniformly scales the vanilla chat window, text, inline PNG/GIF emojis, and attached Clan controls while preserving the lower-right corner and screen bounds |
+| 0.6.0     | - Makes local PNG/GIF emoji tokens available in Say, Shout, Whisper, and Clan; replaces the Chatter type-specific label patch with presentation-time TMP token rendering; and adds a session-local chat height expand/restore button outside the upper-left corner |
+| 0.5.2     | - Silently skips the optional Chatter emoji integration when Chatter is not installed, removing harmless HarmonyX missing-type warnings without changing chat behavior |
+| 0.5.1     | - Releases and shows the mouse cursor only while the Clan-attached chat input is actively focused, keeps Clan controls clickable without closing chat, and leaves cursor restoration to Valheim when chat closes; also recognizes Chatter's disabled input state so the dock cannot remain active after chat closes |
+| 0.5.0     | - Breaking emoji update: replaces the server-transferred 5x5 sprite sheet with up to 25 individual PNG files and 10 individual GIF files preinstalled on the server and clients; only a canonical filename/length/SHA-256 manifest is synchronized, PNGs are packed into a client-local runtime atlas, and bounded GIFs render from composited frame atlases |
+| 0.4.0     | - Adds validated server-distributed 5x5 Clan emoji atlases, a vanilla-chat emoji picker, safe namespaced chat tokens, bounded client hash caching, and client-local TMP sprite rendering |
+| 0.3.1     | - Fixes gameplay input remaining blocked after closing chat with a Clan drawer open; drawers now follow vanilla chat lifetime and mouse suppression is limited to the Clan controls under the pointer |
+| 0.3.0     | - Breaking release: replaces the 0.2.x save and RPC formats without migration; adds server-filtered invite candidates, live presence, application cancellation and moderator synchronization, clan colors and descriptions, a synchronized member limit, safer confirmations, server-side chat/ping rate limits, and read-only display of server-owned settings |
+| 0.2.0     | - Breaking release: replaces the 0.1.x registry and RPC formats without migration; removes the standalone Clan panel in favor of the vanilla chat dock; targets players by stable ID; all servers and clients must upgrade together and clans must be recreated |
+| 0.1.0     | - Clan foundation with Jotunn dependency, persistent server registry, Clan chat panel, channel buttons, feature dock, clan-only ping, and clan position sharing |
