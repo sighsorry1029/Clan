@@ -447,24 +447,18 @@ public static class ClanApi
     internal static void ResetSession()
     {
         ClanLocalSnapshot nextState = CreateLocalSnapshot(ClanRpc.CurrentSnapshot);
-        if (!HasSameState(Current, nextState))
+        bool stateChanged = !HasSameState(Current, nextState);
+        Current = nextState;
+        if (stateChanged)
         {
-            Current = nextState;
             InvokeSubscribers(StateChanged, Current, "state");
         }
-        else
-        {
-            Current = nextState;
-        }
 
-        if (KnownClans.Count != 0)
+        bool directoryChanged = KnownClans.Count != 0;
+        KnownClans = NoClans;
+        if (directoryChanged)
         {
-            KnownClans = NoClans;
             InvokeSubscribers(DirectoryChanged, KnownClans, "directory");
-        }
-        else
-        {
-            KnownClans = NoClans;
         }
         CompleteAll(ClanRenameResultCode.SessionEnded, "The clan session ended.");
     }

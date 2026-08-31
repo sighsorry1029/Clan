@@ -1,10 +1,10 @@
 {
   "name": "Clan",
-  "version_number": "1.0.0",
-  "website_url": "",
-  "description": "A server-authoritative Valheim clan system attached to the active chat UI.",
+  "version_number": "1.0.1",
+  "website_url": "https://discord.gg/jkcJCq2sK5",
+  "description": "Build your Valheim clan with Leader, Officer, Member, and Guest roles, clan chat, a movable health HUD, private map pings, shared positions, custom emblems, and animated GIF emoji. Apply, invite, manage members, and stay connected across Valheim.",
   "dependencies": [
-    "denikson-BepInExPack_Valheim-5.4.2202",
+    "denikson-BepInExPack_Valheim-5.4.2333",
     "ValheimModding-Jotunn-2.29.0"
   ]
 }

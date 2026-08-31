@@ -19,21 +19,25 @@ namespace Clan;
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.0.0";
+    public const string ModVersion = "1.0.1";
     public const string Author = "sighsorry";
-    public const string ModGUID = $"{Author}.valheim.{ModName}";
+    public const string ModGUID = $"{Author}.{ModName}";
 
     internal static ManualLogSource ClanLogger { get; } = BepInEx.Logging.Logger.CreateLogSource(ModName);
+    internal static string DataDirectory =>
+        Path.Combine(
+            Utils.GetSaveDataPath(FileHelpers.FileSource.Local),
+            ModName);
+    internal static string MediaDirectory =>
+        Path.Combine(Paths.ConfigPath, ModName);
 
     internal static ConfigEntry<Toggle> ServerConfigLocked = null!;
     internal static ConfigEntry<KeyboardShortcut> ClanPingModifierKey = null!;
     internal static ConfigEntry<Toggle> ShareClanPositions = null!;
     internal static ConfigEntry<Toggle> ClanFriendlyFire = null!;
-    internal static ConfigEntry<int> MaxClanMembers = null!;
-    internal static ConfigEntry<float> ClanChatDockChannelOffsetX = null!;
-    internal static ConfigEntry<float> ClanChatDockChannelOffsetY = null!;
     internal static ConfigEntry<float> ClanChatWindowScale = null!;
     internal static ConfigEntry<KeyboardShortcut> ClanPanelShortcut = null!;
+    internal static ConfigEntry<KeyboardShortcut> EmojiPanelShortcut = null!;
     internal static ConfigEntry<Toggle> ShowWhisperChatButton = null!;
     internal static ConfigEntry<Toggle> ShowResetSpawnButton = null!;
     internal static ConfigEntry<Toggle> ShowDieButton = null!;
@@ -71,47 +75,91 @@ public sealed class ClanPlugin : BaseUnityPlugin
         KeepOpen = 1
     }
 
+    private sealed class ConfigurationManagerAttributes
+    {
+        public int? Order;
+        public bool? Browsable;
+    }
+
     private void Awake()
+    {
+        ClanLocalization.Initialize(this, _harmony);
+        BindConfiguration();
+
+        ClanEmoji.Init();
+        ClanRegistry.Init();
+        ClanRecentPlayers.Init();
+        ClanApi.Initialize();
+
+        _harmony.PatchAll(Assembly.GetExecutingAssembly());
+        ClanVanillaChatDock.Init();
+        ClanHud.Init();
+        SetupWatcher();
+
+        ClanLogger.LogInfo($"{ModName} {ModVersion} loaded with Jotunn dependency {Main.ModGuid}.");
+    }
+
+    private void BindConfiguration()
     {
         bool saveOnSet = Config.SaveOnConfigSet;
         try
         {
             Config.SaveOnConfigSet = false;
-            ServerConfigLocked = ConfigEntry("1 - General", "Lock Configuration", Toggle.On, "If on, only server admins can change synced configuration.");
+            ServerConfigLocked = ConfigEntry(
+                "1 - General",
+                "Lock Configuration",
+                Toggle.On,
+                new ConfigDescription(
+                    "If on, only server admins can change synced configuration.",
+                    null,
+                    new ConfigurationManagerAttributes { Order = 4 }));
             ConfigSync.AddLockingConfigEntry(ServerConfigLocked);
 
+            ClanFriendlyFire = ConfigEntry(
+                "1 - General",
+                "Clan Friendly Fire",
+                Toggle.On,
+                new ConfigDescription(
+                    "If on, clan-connected players can damage each other.",
+                    null,
+                    new ConfigurationManagerAttributes { Order = 3 }));
+            ShareClanPositions = ConfigEntry(
+                "1 - General",
+                "Share Clan Positions",
+                Toggle.On,
+                new ConfigDescription(
+                    "If on, clan members and guests can share position visibility.",
+                    null,
+                    new ConfigurationManagerAttributes { Order = 2 }));
             ClanPingModifierKey = ConfigEntry(
                 "1 - General",
                 "Clan Ping Modifier Key",
                 new KeyboardShortcut(KeyCode.LeftShift),
-                "Modifier key reserved for clan-only pings.",
+                new ConfigDescription(
+                    "Modifier key reserved for clan-only pings.",
+                    null,
+                    new ConfigurationManagerAttributes { Order = 1 }),
                 synchronizedSetting: false);
 
-            ShareClanPositions = ConfigEntry("1 - General", "Share Clan Positions", Toggle.On, "If on, clan members and guests can share position visibility.");
-            ClanFriendlyFire = ConfigEntry("1 - General", "Clan Friendly Fire", Toggle.Off, "If on, clan-connected players can damage each other.");
-            MaxClanMembers = ConfigEntry(
-                "1 - General",
-                "Maximum Clan Players",
-                ClanDataRules.MaxMembersPerClan,
-                new ConfigDescription(
-                    "Maximum combined number of members and guests in a clan. Existing clans above a lowered limit remain valid, but cannot add players.",
-                    new AcceptableValueRange<int>(1, ClanDataRules.MaxMembersPerClan)));
-
-            ClanChatDockChannelOffsetX = ConfigEntry("2 - UI", "Clan Chat Dock Channel Offset X", 0f, "Extra X offset for the channel buttons attached to the vanilla chat input.", synchronizedSetting: false);
-            ClanChatDockChannelOffsetY = ConfigEntry("2 - UI", "Clan Chat Dock Channel Offset Y", 0f, "Extra Y offset for the channel buttons attached to the vanilla chat input.", synchronizedSetting: false);
             ClanChatWindowScale = ConfigEntry(
                 "2 - UI",
                 "Clan Chat Window Scale",
-                1f,
+                2f,
                 new ConfigDescription(
                     "Uniform scale for the vanilla chat window, including text and inline emojis. The upper-left resize handle updates this value.",
-                    new AcceptableValueRange<float>(1f, 1.75f)),
+                    new AcceptableValueRange<float>(1f, 2f)),
                 synchronizedSetting: false);
             ClanPanelShortcut = ConfigEntry(
                 "2 - UI",
                 "Clan Panel Shortcut",
-                new KeyboardShortcut(KeyCode.G),
+                new KeyboardShortcut(KeyCode.H),
                 "Client-only shortcut that opens or closes the Clan panel. Set the main key to None to disable it.",
+                synchronizedSetting: false);
+            EmojiPanelShortcut = ConfigEntry(
+                "2 - UI",
+                "Emoji Panel Shortcut",
+                new KeyboardShortcut(KeyCode.G),
+                "Client-only shortcut that opens the chat and Emoji panel. Set the main key to None to disable it.",
                 synchronizedSetting: false);
             ShowWhisperChatButton = ConfigEntry(
                 "2 - UI",
@@ -142,12 +190,15 @@ public sealed class ClanPlugin : BaseUnityPlugin
                 "2 - UI",
                 "Clan HUD Player List Collapsed",
                 Toggle.Off,
-                "If on, keeps the Clan HUD header visible while hiding its player list.",
+                new ConfigDescription(
+                    "Stores whether the Clan HUD player list is collapsed.",
+                    null,
+                    new ConfigurationManagerAttributes { Browsable = false }),
                 synchronizedSetting: false);
             ClanHudPosition = ConfigEntry(
                 "2 - UI",
                 "Clan HUD Position",
-                new Vector2(0.02f, 0.28f),
+                new Vector2(0.015f, 0.32f),
                 "Normalized safe-area position of the Clan HUD's upper-left corner. Drag the Clan header to update it.",
                 synchronizedSetting: false);
 
@@ -157,47 +208,47 @@ public sealed class ClanPlugin : BaseUnityPlugin
         {
             Config.SaveOnConfigSet = saveOnSet;
         }
-
-        ClanEmoji.Init();
-        ClanRegistry.Init();
-        ClanRecentPlayers.Init();
-        ClanApi.Initialize();
-
-        _harmony.PatchAll(Assembly.GetExecutingAssembly());
-        ClanVanillaChatDock.Init();
-        ClanHud.Init();
-        SetupWatcher();
-
-        ClanLogger.LogInfo($"{ModName} {ModVersion} loaded with Jotunn dependency {Main.ModGuid}.");
     }
 
     private void OnDestroy()
     {
-        if (_watcher != null)
+        DisposeWatcher();
+        TryShutdown(() => SaveWithRespectToConfigSet(), "save configuration");
+        TryShutdown(ClanVanillaChatDock.Dispose, "dispose chat dock");
+        TryShutdown(ClanHud.Dispose, "dispose HUD");
+        TryShutdown(ClanUiFeedback.Dispose, "dispose UI feedback");
+        TryShutdown(ClanApi.Dispose, "dispose API");
+        TryShutdown(ClanRecentPlayers.Dispose, "dispose recent-player storage");
+        TryShutdown(ClanEmoji.Dispose, "dispose media runtime");
+        TryShutdown(ClanMap.ResetSession, "reset map state");
+        TryShutdown(ClanLocalization.Dispose, "dispose localization runtime");
+        TryShutdown(_harmony.UnpatchSelf, "remove Harmony patches");
+    }
+
+    private void DisposeWatcher()
+    {
+        FileSystemWatcher? watcher = _watcher;
+        _watcher = null;
+        if (watcher == null)
         {
-            _watcher.EnableRaisingEvents = false;
-            _watcher.Dispose();
-            _watcher = null;
+            return;
         }
 
+        TryShutdown(
+            () => watcher.EnableRaisingEvents = false,
+            "stop configuration watcher");
+        TryShutdown(watcher.Dispose, "dispose configuration watcher");
+    }
+
+    private static void TryShutdown(Action action, string operation)
+    {
         try
         {
-            SaveWithRespectToConfigSet();
+            action();
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
-            ClanLogger.LogWarning($"Failed to save configuration during shutdown: {ex.Message}");
-        }
-        finally
-        {
-            ClanVanillaChatDock.Dispose();
-            ClanUiFeedback.Dispose();
-            ClanApi.Dispose();
-            ClanRecentPlayers.Dispose();
-            ClanEmoji.Dispose();
-            ClanHud.Dispose();
-            ClanMap.ResetSession();
-            _harmony.UnpatchSelf();
+            ClanLogger.LogWarning($"Failed to {operation} during shutdown: {exception.Message}");
         }
     }
 

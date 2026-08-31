@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using BepInEx;
 using YamlDotNet.Serialization;
 
 namespace Clan;
@@ -57,6 +56,7 @@ internal static class ClanRecentPlayers
     private static bool _capacityWarningLogged;
     private static DateTime _nextPollUtc = DateTime.MinValue;
     private static DateTime _nextPruneUtc = DateTime.MinValue;
+    private static DateTime _nextLoadAttemptUtc = DateTime.MinValue;
     private static DateTime _saveAfterUtc = DateTime.MaxValue;
 
     internal static void Init()
@@ -77,7 +77,7 @@ internal static class ClanRecentPlayers
             return;
         }
 
-        CloseLoadedSession(DateTime.UtcNow);
+        CloseLoadedSession(DateTime.UtcNow, bypassSaveRetryDelay: true);
         _initialized = false;
         ResetMemory();
     }
@@ -220,6 +220,11 @@ internal static class ClanRecentPlayers
             return true;
         }
 
+        if (nowUtc < _nextLoadAttemptUtc)
+        {
+            return false;
+        }
+
         if (!CloseLoadedSession(nowUtc))
         {
             return false;
@@ -228,18 +233,38 @@ internal static class ClanRecentPlayers
         _loadedSession = session;
         _loadedWorldUid = worldUid;
         _loadedSaveFile = ResolveSaveFile();
-        LoadGlobalSave(nowUtc);
+        try
+        {
+            LoadGlobalSave(nowUtc);
+        }
+        catch (Exception error) when (IsSaveAccessError(error))
+        {
+            string saveFile = _loadedSaveFile!;
+            ResetMemory();
+            _nextLoadAttemptUtc = nowUtc.Add(SaveRetryDelay);
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Could not read recent-player data from '{saveFile}'. The file was left unchanged " +
+                $"and loading will be retried: {error.Message}");
+            return false;
+        }
+
+        _nextLoadAttemptUtc = DateTime.MinValue;
         _nextPollUtc = DateTime.MinValue;
         _nextPruneUtc = nowUtc.Add(PruneInterval);
         return true;
     }
 
-    private static bool CloseLoadedSession(DateTime nowUtc)
+    private static bool CloseLoadedSession(
+        DateTime nowUtc,
+        bool bypassSaveRetryDelay = false)
     {
         if (_loadedSaveFile != null)
         {
             MarkAllOffline(nowUtc);
-            if (!TrySave(nowUtc, force: true))
+            if (!TrySave(
+                    nowUtc,
+                    force: true,
+                    bypassRetryDelay: bypassSaveRetryDelay))
             {
                 return false;
             }
@@ -570,11 +595,6 @@ internal static class ClanRecentPlayers
         players = null;
         needsRewrite = false;
         error = null;
-        if (!File.Exists(path))
-        {
-            return false;
-        }
-
         try
         {
             FileInfo info = new(path);
@@ -585,14 +605,42 @@ internal static class ClanRecentPlayers
             }
 
             byte[] bytes = File.ReadAllBytes(path);
+            if (bytes.Length > MaximumSaveBytes)
+            {
+                throw new InvalidDataException(
+                    $"Recent-player save exceeds the {MaximumSaveBytes}-byte limit.");
+            }
+
             players = ParseSave(bytes, nowUtc, out needsRewrite);
             return true;
         }
-        catch (Exception ex)
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception ex) when (IsInvalidSaveContent(ex))
         {
             error = ex;
             return false;
         }
+    }
+
+    private static bool IsInvalidSaveContent(Exception error)
+    {
+        return error is InvalidDataException or
+            DecoderFallbackException or
+            YamlDotNet.Core.YamlException;
+    }
+
+    private static bool IsSaveAccessError(Exception error)
+    {
+        return error is IOException or
+            UnauthorizedAccessException or
+            System.Security.SecurityException;
     }
 
     private static Dictionary<string, StoredRecentPlayer> ParseSave(
@@ -713,14 +761,18 @@ internal static class ClanRecentPlayers
         _saveAfterUtc = DateTime.MaxValue;
     }
 
-    private static bool TrySave(DateTime nowUtc, bool force)
+    private static bool TrySave(
+        DateTime nowUtc,
+        bool force,
+        bool bypassRetryDelay = false)
     {
         if (!_dirty || _loadedSaveFile == null)
         {
             return true;
         }
 
-        if (nowUtc < _saveAfterUtc && (!force || _saveFailed))
+        if (nowUtc < _saveAfterUtc &&
+            (!force || (_saveFailed && !bypassRetryDelay)))
         {
             return false;
         }
@@ -869,11 +921,6 @@ internal static class ClanRecentPlayers
 
     private static string TryQuarantine(string path)
     {
-        if (!File.Exists(path))
-        {
-            return "";
-        }
-
         string timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
         for (int attempt = 0; attempt < 10; attempt++)
         {
@@ -887,15 +934,17 @@ internal static class ClanRecentPlayers
                 File.Move(path, quarantineFile);
                 return quarantineFile;
             }
+            catch (FileNotFoundException)
+            {
+                return "";
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return "";
+            }
             catch (IOException) when (File.Exists(path) && File.Exists(quarantineFile))
             {
                 // A generated destination was claimed concurrently. Retry with a new name.
-            }
-            catch (Exception ex)
-            {
-                ClanPlugin.ClanLogger.LogWarning(
-                    $"Failed to quarantine recent-player save '{path}': {ex.Message}");
-                return "";
             }
         }
 
@@ -906,10 +955,7 @@ internal static class ClanRecentPlayers
 
     private static string ResolveSaveFile()
     {
-        return Path.Combine(
-            Paths.ConfigPath,
-            ClanPlugin.ModName,
-            "recent-players.yml");
+        return Path.Combine(ClanPlugin.DataDirectory, "recent-players.yml");
     }
 
     private static void MarkDirty(DateTime nowUtc)
@@ -946,6 +992,7 @@ internal static class ClanRecentPlayers
         _capacityWarningLogged = false;
         _nextPollUtc = DateTime.MinValue;
         _nextPruneUtc = DateTime.MinValue;
+        _nextLoadAttemptUtc = DateTime.MinValue;
         _saveAfterUtc = DateTime.MaxValue;
     }
 

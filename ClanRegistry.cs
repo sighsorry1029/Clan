@@ -4,7 +4,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
-using BepInEx;
 using UnityEngine;
 using YamlDotNet.Serialization;
 
@@ -115,17 +114,16 @@ internal static class ClanRegistry
             return;
         }
 
-        bool snapshotOnSuccess = request.Type is not ClanRequestType.UpdatePosition and
-            not ClanRequestType.SendClanPing and
-            not ClanRequestType.SendClanChat and
-            not ClanRequestType.RequestDirectory and
-            not ClanRequestType.RequestHud;
+        bool snapshotOnSuccess = true;
         string status;
         ClanOperationResultCode responseResultCode = ClanOperationResultCode.None;
         bool announcePresence = false;
 
         try
         {
+            bool isRegistryWriteRequest = IsRegistryWriteRequest(request.Type);
+            snapshotOnSuccess =
+                request.Type == ClanRequestType.RequestSnapshot || isRegistryWriteRequest;
             EnsureLoaded();
             RefreshPlayer(actor);
             ClanRecentPlayers.RememberPlayer(actor);
@@ -155,7 +153,7 @@ internal static class ClanRegistry
                 return;
             }
 
-            if (IsRegistryWriteRequest(request.Type) &&
+            if (isRegistryWriteRequest &&
                 !ClanRpc.ConsumeMutationRequest(actor))
             {
                 ClanRpc.SendSnapshot(peer, new ClanClientSnapshot
@@ -228,19 +226,19 @@ internal static class ClanRegistry
             ClanPlugin.ClanLogger.LogWarning($"Rejected clan request from {actor}: {ex.Message}");
             if (request.Type == ClanRequestType.RenameClan)
             {
-                status = "Clan rename failed because the server clan state did not pass validation.";
+                status = ClanLocalization.EncodeStatus("clan_status_rename_validation_failed");
                 responseResultCode = ClanOperationResultCode.Failed;
             }
             else
             {
-                status = $"Invalid clan request: {ex.Message}";
+                status = ClanLocalization.EncodeStatus("clan_status_invalid_request_server");
                 responseResultCode = ClanOperationResultCode.Failed;
             }
         }
         catch (Exception ex)
         {
             ClanPlugin.ClanLogger.LogWarning($"Clan request from {actor} failed: {ex}");
-            status = "Clan request failed. Check the server log for details.";
+            status = ClanLocalization.EncodeStatus("clan_status_request_failed");
             responseResultCode = ClanOperationResultCode.Failed;
         }
 
@@ -1271,29 +1269,24 @@ internal static class ClanRegistry
         string requestedEmblemKey)
     {
         string clanName = ClanDataRules.RequireClanName(requestedName);
-        string description = ClanDataRules.RequireText(
-            requestedDescription,
-            ClanDataRules.MaxClanDescriptionLength,
-            "clan description",
-            allowEmpty: true,
-            allowLineBreaks: false);
+        string description = ClanDataRules.RequireClanDescription(requestedDescription);
         string emblemKey = ClanDataRules.RequireClanEmblemKey(requestedEmblemKey);
         if (!ClanEmoji.IsAvailableEmblemKey(emblemKey))
         {
-            return "The selected emblem is not available in the server emblem catalog.";
+            return ClanLocalization.EncodeStatus("clan_status_emblem_unavailable");
         }
         if (FindPrimaryClan(actor) != null || FindGuestClan(actor) != null)
         {
-            return "Leave your current clan affiliations before creating another clan.";
+            return ClanLocalization.EncodeStatus("clan_status_leave_affiliations_before_create");
         }
 
         if (ClansByName.ContainsKey(clanName))
         {
-            return $"Clan '{clanName}' already exists.";
+            return ClanLocalization.EncodeStatus("clan_status_name_exists", clanName);
         }
         if (ClansById.Count >= ClanDataRules.MaxClans)
         {
-            return "The server has reached the clan limit.";
+            return ClanLocalization.EncodeStatus("clan_status_server_clan_limit");
         }
 
         string clanId;
@@ -1318,7 +1311,7 @@ internal static class ClanRegistry
         ClansByName.Add(clan.Name, clan);
         PrimaryClanByPlayerId.Add(actor.Id, clan);
         Save(wardAuthorizationChanged: true);
-        return $"Clan '{clanName}' created.";
+        return ClanLocalization.EncodeStatus("clan_status_created", clanName);
     }
 
     private static long GetNextClanCreationOrder()
@@ -1356,21 +1349,26 @@ internal static class ClanRegistry
         ClanState? clan = RequirePermission(actor, requestedClanId, CanModerate);
         if (clan == null)
         {
-            return "Only clan leaders and officers can invite players.";
+            return ClanLocalization.EncodeStatus("clan_status_only_moderators_invite");
         }
 
         if (!TryFindKnownPlayerById(targetId, out ClanPlayerRef target))
         {
-            return "The selected player has not joined recently.";
+            return ClanLocalization.EncodeStatus("clan_status_player_not_recent");
         }
 
         if (clan.Members.ContainsKey(target.Id))
         {
-            return $"{target.Name} is already connected to {clan.Name}.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_player_already_connected",
+                target.Name,
+                clan.Name);
         }
         if (FindGuestClan(target) != null)
         {
-            return $"{target.Name} must leave their current guest clan before joining another as Guest.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_player_leave_guest_before_join",
+                target.Name);
         }
 
         ClanInvite invite = new()
@@ -1382,21 +1380,27 @@ internal static class ClanRegistry
         if (!PendingInvitesByTarget.ContainsKey(target.Id) &&
             PendingInvitesByTarget.Count >= ClanDataRules.MaxInvites)
         {
-            return "The server has reached the pending invite limit.";
+            return ClanLocalization.EncodeStatus("clan_status_server_invite_limit");
         }
 
         if (PendingInvitesByTarget.TryGetValue(target.Id, out ClanInvite existingInvite) &&
             StringComparer.Ordinal.Equals(existingInvite.ClanId, clan.ClanId))
         {
-            return $"{target.Name} already has an invite to {clan.Name}.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_invite_already_pending",
+                target.Name,
+                clan.Name);
         }
 
         PendingInvitesByTarget[target.Id] = invite;
         Save();
         SendSnapshotUpdate(
             target,
-            $"{actor.Name} invited you to {clan.Name}.");
-        return $"Invite sent to {target.Name}.";
+            ClanLocalization.EncodeStatus(
+                "clan_status_invited_you",
+                actor.Name,
+                clan.Name));
+        return ClanLocalization.EncodeStatus("clan_status_invite_sent", target.Name);
     }
 
     private static string Apply(
@@ -1406,28 +1410,32 @@ internal static class ClanRegistry
         string clanId = ClanDataRules.RequireClanId(requestedClanId);
         if (!ClansById.TryGetValue(clanId, out ClanState clan))
         {
-            return "The selected clan was not found.";
+            return ClanLocalization.EncodeStatus("clan_status_selected_clan_missing");
         }
 
         if (clan.Members.ContainsKey(actor.Id))
         {
-            return $"You are already connected to {clan.Name}.";
+            return ClanLocalization.EncodeStatus("clan_status_already_connected", clan.Name);
         }
         if (FindGuestClan(actor) != null)
         {
-            return "Leave your current guest clan before applying to another.";
+            return ClanLocalization.EncodeStatus("clan_status_leave_guest_before_apply");
         }
 
         ClanState? previousApplicationClan = FindApplicationClan(actor.Id);
         if (!ReferenceEquals(previousApplicationClan, clan) &&
             clan.Applications.Count >= ClanDataRules.MaxApplicationsPerClan)
         {
-            return $"Clan '{clan.Name}' cannot accept more applications.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_application_limit",
+                clan.Name);
         }
 
         if (ReferenceEquals(previousApplicationClan, clan))
         {
-            return $"Your application to {clan.Name} is already pending.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_application_already_pending",
+                clan.Name);
         }
 
         RemoveApplication(actor.Id);
@@ -1439,12 +1447,14 @@ internal static class ClanRegistry
         {
             SendModeratorSnapshots(
                 previousApplicationClan,
-                $"{actor.Name} withdrew their application.");
+                ClanLocalization.EncodeStatus(
+                    "clan_status_application_withdrawn_notice",
+                    actor.Name));
         }
         SendModeratorSnapshots(
             clan,
-            $"{actor.Name} applied to join.");
-        return $"Applied to {clan.Name}.";
+            ClanLocalization.EncodeStatus("clan_status_applied_notice", actor.Name));
+        return ClanLocalization.EncodeStatus("clan_status_applied", clan.Name);
     }
 
     private static string CancelApplication(ClanPlayerRef actor)
@@ -1452,12 +1462,16 @@ internal static class ClanRegistry
         ClanState? clan = RemoveApplication(actor.Id);
         if (clan == null)
         {
-            return "You do not have a pending clan application.";
+            return ClanLocalization.EncodeStatus("clan_status_no_pending_application");
         }
 
         Save();
-        SendModeratorSnapshots(clan, $"{actor.Name} withdrew their application.");
-        return $"Application to {clan.Name} cancelled.";
+        SendModeratorSnapshots(
+            clan,
+            ClanLocalization.EncodeStatus(
+                "clan_status_application_withdrawn_notice",
+                actor.Name));
+        return ClanLocalization.EncodeStatus("clan_status_application_cancelled", clan.Name);
     }
 
     private static string AcceptInvite(ClanPlayerRef actor, string inviteId)
@@ -1465,27 +1479,27 @@ internal static class ClanRegistry
         if (!PendingInvitesByTarget.TryGetValue(actor.Id, out ClanInvite invite) ||
             !StringComparer.Ordinal.Equals(invite.InviteId, inviteId))
         {
-            return "No matching invite found.";
+            return ClanLocalization.EncodeStatus("clan_status_invite_missing");
         }
 
         if (!ClansById.TryGetValue(invite.ClanId, out ClanState clan))
         {
             PendingInvitesByTarget.Remove(actor.Id);
             Save();
-            return "The inviting clan no longer exists.";
+            return ClanLocalization.EncodeStatus("clan_status_inviting_clan_missing");
         }
 
         if (clan.Members.ContainsKey(actor.Id))
         {
-            return $"You are already connected to {clan.Name}.";
+            return ClanLocalization.EncodeStatus("clan_status_already_connected", clan.Name);
         }
         if (FindGuestClan(actor) != null)
         {
-            return "Leave your current guest clan before accepting this invite.";
+            return ClanLocalization.EncodeStatus("clan_status_leave_guest_before_accept");
         }
-        if (clan.Members.Count >= GetEffectiveMemberLimit())
+        if (clan.Members.Count >= ClanDataRules.MaxMembersPerClan)
         {
-            return $"Clan '{clan.Name}' has reached the member limit.";
+            return ClanLocalization.EncodeStatus("clan_status_member_limit", clan.Name);
         }
 
         ClanState? previousEffectiveClan = FindActiveClan(actor);
@@ -1495,7 +1509,7 @@ internal static class ClanRegistry
         Save(wardAuthorizationChanged: true);
         BroadcastSnapshots(
             clan,
-            $"{actor.Name} joined as Guest.",
+            ClanLocalization.EncodeStatus("clan_status_joined_guest_notice", actor.Name),
             actor.Id);
         if (previousEffectiveClan != null &&
             !ReferenceEquals(previousEffectiveClan, clan))
@@ -1507,9 +1521,11 @@ internal static class ClanRegistry
         {
             SendModeratorSnapshots(
                 previousApplicationClan,
-                $"{actor.Name} withdrew their application.");
+                ClanLocalization.EncodeStatus(
+                    "clan_status_application_withdrawn_notice",
+                    actor.Name));
         }
-        return $"Joined {clan.Name} as Guest.";
+        return ClanLocalization.EncodeStatus("clan_status_joined_guest", clan.Name);
     }
 
     private static string DeclineInvite(ClanPlayerRef actor, string inviteId)
@@ -1517,7 +1533,7 @@ internal static class ClanRegistry
         if (!PendingInvitesByTarget.TryGetValue(actor.Id, out ClanInvite invite) ||
             !StringComparer.Ordinal.Equals(invite.InviteId, inviteId))
         {
-            return "No matching invite found.";
+            return ClanLocalization.EncodeStatus("clan_status_invite_missing");
         }
 
         PendingInvitesByTarget.Remove(actor.Id);
@@ -1525,7 +1541,7 @@ internal static class ClanRegistry
         string clanName = ClansById.TryGetValue(invite.ClanId, out ClanState clan)
             ? clan.Name
             : invite.ClanId;
-        return $"Declined invite to {clanName}.";
+        return ClanLocalization.EncodeStatus("clan_status_invite_declined", clanName);
     }
 
     private static string ResolveApplication(
@@ -1537,25 +1553,30 @@ internal static class ClanRegistry
         ClanState? clan = RequirePermission(actor, requestedClanId, CanModerate);
         if (clan == null)
         {
-            return "Only clan leaders and officers can resolve applications.";
+            return ClanLocalization.EncodeStatus("clan_status_only_moderators_resolve");
         }
 
         if (!clan.Applications.TryGetValue(applicantId, out ClanPlayerRef applicant))
         {
-            return "The selected application was not found.";
+            return ClanLocalization.EncodeStatus("clan_status_application_missing");
         }
 
         if (accept && clan.Members.ContainsKey(applicant.Id))
         {
-            return $"{applicant.Name} is already connected to {clan.Name}.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_player_already_connected",
+                applicant.Name,
+                clan.Name);
         }
         if (accept && FindGuestClan(applicant) != null)
         {
-            return $"{applicant.Name} must leave their current guest clan before this application can be accepted.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_applicant_leave_guest",
+                applicant.Name);
         }
-        if (accept && clan.Members.Count >= GetEffectiveMemberLimit())
+        if (accept && clan.Members.Count >= ClanDataRules.MaxMembersPerClan)
         {
-            return $"Clan '{clan.Name}' has reached the member limit.";
+            return ClanLocalization.EncodeStatus("clan_status_member_limit", clan.Name);
         }
 
         if (accept)
@@ -1567,26 +1588,36 @@ internal static class ClanRegistry
             Save(wardAuthorizationChanged: true);
             BroadcastSnapshots(
                 clan,
-                $"{applicant.Name} joined as Guest.",
+                ClanLocalization.EncodeStatus(
+                    "clan_status_joined_guest_notice",
+                    applicant.Name),
                 actor.Id);
             if (previousEffectiveClan != null &&
                 !ReferenceEquals(previousEffectiveClan, clan))
             {
                 BroadcastSnapshots(previousEffectiveClan, "", applicant.Id);
             }
-            return $"Accepted {applicant.Name} as Guest.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_application_accepted_guest",
+                applicant.Name);
         }
 
         clan.Applications.Remove(applicantId);
         Save();
         SendSnapshotUpdate(
             applicant,
-            $"Your application to {clan.Name} was rejected.");
+            ClanLocalization.EncodeStatus(
+                "clan_status_application_rejected_you",
+                clan.Name));
         SendModeratorSnapshots(
             clan,
-            $"{applicant.Name}'s application was rejected.",
+            ClanLocalization.EncodeStatus(
+                "clan_status_application_rejected_notice",
+                applicant.Name),
             actor.Id);
-        return $"Rejected {applicant.Name}'s application.";
+        return ClanLocalization.EncodeStatus(
+            "clan_status_application_rejected",
+            applicant.Name);
     }
 
     private static string Kick(
@@ -1597,22 +1628,22 @@ internal static class ClanRegistry
         ClanState? clan = RequirePermission(actor, requestedClanId, CanModerate);
         if (clan == null)
         {
-            return "You do not have permission to remove players.";
+            return ClanLocalization.EncodeStatus("clan_status_remove_unauthorized");
         }
 
         if (!clan.Members.TryGetValue(targetId, out ClanMember target))
         {
-            return "The selected player is not connected to this clan.";
+            return ClanLocalization.EncodeStatus("clan_status_player_not_connected");
         }
 
         if (target.Role == ClanRole.Leader)
         {
-            return "Transfer leadership before removing the leader.";
+            return ClanLocalization.EncodeStatus("clan_status_transfer_before_remove_leader");
         }
 
         if (!CanAffectMember(clan, actor, target))
         {
-            return "You cannot remove a clan member with an equal or higher role.";
+            return ClanLocalization.EncodeStatus("clan_status_cannot_remove_equal_role");
         }
 
         ClanState? previousEffectiveClan = FindActiveClan(target.Player);
@@ -1623,10 +1654,14 @@ internal static class ClanRegistry
             LastPositionUpdateByPlayer.Remove(target.Player.Id);
         }
         Save(wardAuthorizationChanged: true);
-        SendSnapshotUpdate(target.Player, $"You were removed from {clan.Name}.");
+        SendSnapshotUpdate(
+            target.Player,
+            ClanLocalization.EncodeStatus("clan_status_removed_you", clan.Name));
         BroadcastSnapshots(
             clan,
-            $"{target.Player.Name} was removed.",
+            ClanLocalization.EncodeStatus(
+                "clan_status_removed_notice",
+                target.Player.Name),
             actor.Id);
         ClanState? currentEffectiveClan = FindActiveClan(target.Player);
         if (!ReferenceEquals(previousEffectiveClan, currentEffectiveClan) &&
@@ -1635,7 +1670,7 @@ internal static class ClanRegistry
         {
             BroadcastSnapshots(currentEffectiveClan, "", target.Player.Id);
         }
-        return $"Removed {target.Player.Name}.";
+        return ClanLocalization.EncodeStatus("clan_status_removed", target.Player.Name);
     }
 
     private static string SetRole(
@@ -1650,38 +1685,41 @@ internal static class ClanRegistry
             !clan.Members.TryGetValue(actor.Id, out ClanMember actorMember) ||
             !CanModerate(actorMember))
         {
-            return "Only clan leaders and officers can manage roles.";
+            return ClanLocalization.EncodeStatus("clan_status_only_moderators_roles");
         }
 
         if (!clan.Members.TryGetValue(targetId, out ClanMember target))
         {
-            return "The selected player is not connected to this clan.";
+            return ClanLocalization.EncodeStatus("clan_status_player_not_connected");
         }
 
         if (target.Player == actor)
         {
-            return "You cannot change your own clan role.";
+            return ClanLocalization.EncodeStatus("clan_status_cannot_change_own_role");
         }
 
         if (target.Role == ClanRole.Leader || requestedRole == ClanRole.Leader)
         {
-            return "Use leadership transfer to change the clan leader.";
+            return ClanLocalization.EncodeStatus("clan_status_use_leadership_transfer");
         }
 
         if (!CanAffectMember(clan, actor, target))
         {
-            return "You cannot change the role of a clan member with equal or higher authority.";
+            return ClanLocalization.EncodeStatus("clan_status_cannot_change_equal_role");
         }
 
         if (ClanDataRules.GetRolePower(requestedRole) >=
             ClanDataRules.GetRolePower(actorMember.Role))
         {
-            return "You cannot assign a clan role with equal or higher authority than your own.";
+            return ClanLocalization.EncodeStatus("clan_status_cannot_assign_equal_role");
         }
 
         if (target.Role == requestedRole)
         {
-            return $"{target.Player.Name} is already {requestedRole}.";
+            return EncodeRoleStatus(
+                "clan_status_player_already_role_",
+                requestedRole,
+                target.Player.Name);
         }
 
         bool wasGuest = target.Role == ClanRole.Guest;
@@ -1692,7 +1730,9 @@ internal static class ClanRegistry
             {
                 if (!ReferenceEquals(primaryClan, clan))
                 {
-                    return $"{target.Player.Name} already has a primary clan.";
+                    return ClanLocalization.EncodeStatus(
+                        "clan_status_player_has_primary_clan",
+                        target.Player.Name);
                 }
                 throw new InvalidDataException(
                     $"Player '{target.Player.Id}' is indexed as both Guest and primary in the same clan.");
@@ -1713,7 +1753,9 @@ internal static class ClanRegistry
             {
                 if (!ReferenceEquals(guestClan, clan))
                 {
-                    return $"{target.Player.Name} already has a guest clan.";
+                    return ClanLocalization.EncodeStatus(
+                        "clan_status_player_has_guest_clan",
+                        target.Player.Name);
                 }
                 throw new InvalidDataException(
                     $"Player '{target.Player.Id}' is indexed as both primary and Guest in the same clan.");
@@ -1721,7 +1763,9 @@ internal static class ClanRegistry
             if (FindApplicationClan(target.Player.Id) != null ||
                 PendingInvitesByTarget.ContainsKey(target.Player.Id))
             {
-                return $"{target.Player.Name} must resolve their pending guest application or invite first.";
+                return ClanLocalization.EncodeStatus(
+                    "clan_status_player_resolve_pending_guest",
+                    target.Player.Name);
             }
             if (!PrimaryClanByPlayerId.TryGetValue(target.Player.Id, out ClanState indexedPrimaryClan) ||
                 !ReferenceEquals(indexedPrimaryClan, clan))
@@ -1740,13 +1784,22 @@ internal static class ClanRegistry
         {
             SendSnapshotUpdate(
                 target.Player,
-                $"Your role in {clan.Name} changed to {requestedRole}.");
+                EncodeRoleStatus(
+                    "clan_status_your_role_changed_",
+                    requestedRole,
+                    clan.Name));
         }
         BroadcastSnapshots(
             clan,
-            $"{target.Player.Name} role changed to {requestedRole}.",
+            EncodeRoleStatus(
+                "clan_status_role_changed_notice_",
+                requestedRole,
+                target.Player.Name),
             actor.Id);
-        return $"Set {target.Player.Name} to {requestedRole}.";
+        return EncodeRoleStatus(
+            "clan_status_role_set_",
+            requestedRole,
+            target.Player.Name);
     }
 
     private static string TransferLeadership(
@@ -1761,22 +1814,24 @@ internal static class ClanRegistry
         }
         if (clan == null)
         {
-            return "Only the clan leader can transfer leadership.";
+            return ClanLocalization.EncodeStatus("clan_status_only_leader_transfer");
         }
 
         if (!clan.Members.TryGetValue(targetId, out ClanMember target) ||
             target.Role is not ClanRole.Officer and not ClanRole.Member)
         {
-            return "Leadership can only be transferred to an Officer or Member.";
+            return ClanLocalization.EncodeStatus("clan_status_transfer_target_role");
         }
 
         if (target.Player == actor)
         {
-            return "You are already the leader.";
+            return ClanLocalization.EncodeStatus("clan_status_already_leader");
         }
         if (!ReferenceEquals(FindActiveClan(target.Player), clan))
         {
-            return $"{target.Player.Name} must leave their guest clan before receiving leadership.";
+            return ClanLocalization.EncodeStatus(
+                "clan_status_leave_guest_before_leadership",
+                target.Player.Name);
         }
 
         clan.Members[actor.Id].Role = ClanRole.Member;
@@ -1784,9 +1839,13 @@ internal static class ClanRegistry
         Save(wardAuthorizationChanged: true);
         BroadcastSnapshots(
             clan,
-            $"{target.Player.Name} is now the leader.",
+            ClanLocalization.EncodeStatus(
+                "clan_status_now_leader_notice",
+                target.Player.Name),
             actor.Id);
-        return $"Leadership transferred to {target.Player.Name}.";
+        return ClanLocalization.EncodeStatus(
+            "clan_status_leadership_transferred",
+            target.Player.Name);
     }
 
     private static string UpdateClanProfile(
@@ -1798,45 +1857,26 @@ internal static class ClanRegistry
     {
         string clanId = ClanDataRules.RequireClanId(requestedClanId);
         string clanName = ClanDataRules.RequireClanName(requestedName);
-        string description = ClanDataRules.RequireText(
-            requestedDescription,
-            ClanDataRules.MaxClanDescriptionLength,
-            "clan description",
-            allowEmpty: true,
-            allowLineBreaks: false);
+        string description = ClanDataRules.RequireClanDescription(requestedDescription);
         string emblemKey = ClanDataRules.RequireClanEmblemKey(requestedEmblemKey);
         if (!ClanEmoji.IsAvailableEmblemKey(emblemKey))
         {
-            return "The selected emblem is not available in the server emblem catalog.";
+            return ClanLocalization.EncodeStatus("clan_status_emblem_unavailable");
         }
-        ClanState? clan = RequireLeader(actor);
-        if (clan == null || !StringComparer.Ordinal.Equals(clan.ClanId, clanId))
+        ClanState? clan = FindActiveClan(actor);
+        if (clan == null ||
+            !clan.IsLeader(actor) ||
+            !StringComparer.Ordinal.Equals(clan.ClanId, clanId))
         {
-            return "Only the clan leader can update this clan profile.";
+            return ClanLocalization.EncodeStatus("clan_status_only_leader_update_profile");
         }
 
-        if (ClansByName.TryGetValue(clanName, out ClanState existingClan) &&
-            !ReferenceEquals(existingClan, clan))
-        {
-            return $"Clan '{clanName}' already exists.";
-        }
-
-        bool nameChanged = !StringComparer.Ordinal.Equals(clan.Name, clanName);
-        bool profileChanged = nameChanged ||
-                               !StringComparer.Ordinal.Equals(clan.Description, description) ||
-                               !StringComparer.Ordinal.Equals(clan.EmblemKey, emblemKey);
-        if (!profileChanged)
-        {
-            return "The clan profile is unchanged.";
-        }
-
-        ClanState committedClan = CommitClanProfile(
+        return ApplyClanProfileChange(
             clan,
             clanName,
             description,
-            emblemKey);
-        NotifyProfileCommitted(committedClan, actor.Id);
-        return "Clan profile updated.";
+            emblemKey,
+            actor.Id).Status;
     }
 
     private static OperationOutcome RenameClan(
@@ -1851,37 +1891,67 @@ internal static class ClanRegistry
         {
             return new OperationOutcome(
                 ClanOperationResultCode.ClanChanged,
-                "Your clan changed before the rename request was processed.");
+                ClanLocalization.EncodeStatus("clan_status_clan_changed_before_rename"));
         }
         if (!clan.IsLeader(actor))
         {
             return new OperationOutcome(
                 ClanOperationResultCode.Unauthorized,
-                "Only the clan leader can rename this clan.");
+                ClanLocalization.EncodeStatus("clan_status_only_leader_rename"));
         }
-        if (StringComparer.Ordinal.Equals(clan.Name, clanName))
+        OperationOutcome outcome = ApplyClanProfileChange(
+            clan,
+            clanName,
+            clan.Description,
+            clan.EmblemKey,
+            actor.Id);
+        return outcome.Code switch
         {
-            return new OperationOutcome(
+            ClanOperationResultCode.Success => new OperationOutcome(
+                ClanOperationResultCode.Success,
+                ClanLocalization.EncodeStatus("clan_status_renamed", clanName)),
+            ClanOperationResultCode.Unchanged => new OperationOutcome(
                 ClanOperationResultCode.Unchanged,
-                "The clan name is unchanged.");
-        }
+                ClanLocalization.EncodeStatus("clan_status_name_unchanged")),
+            _ => outcome
+        };
+    }
+
+    private static OperationOutcome ApplyClanProfileChange(
+        ClanState clan,
+        string clanName,
+        string description,
+        string emblemKey,
+        string actorId)
+    {
         if (ClansByName.TryGetValue(clanName, out ClanState existingClan) &&
             !ReferenceEquals(existingClan, clan))
         {
             return new OperationOutcome(
                 ClanOperationResultCode.NameTaken,
-                $"Clan '{clanName}' already exists.");
+                ClanLocalization.EncodeStatus("clan_status_name_exists", clanName));
+        }
+
+        bool profileChanged =
+            !StringComparer.Ordinal.Equals(clan.Name, clanName) ||
+            !StringComparer.Ordinal.Equals(clan.Description, description) ||
+            !StringComparer.Ordinal.Equals(clan.EmblemKey, emblemKey);
+        if (!profileChanged)
+        {
+            return new OperationOutcome(
+                ClanOperationResultCode.Unchanged,
+                ClanLocalization.EncodeStatus("clan_status_profile_unchanged"));
         }
 
         ClanState committedClan = CommitClanProfile(
             clan,
             clanName,
-            clan.Description,
-            clan.EmblemKey);
-        NotifyProfileCommitted(committedClan, actor.Id);
+            description,
+            emblemKey);
+        NotifyProfileCommitted(committedClan, actorId);
         return new OperationOutcome(
             ClanOperationResultCode.Success,
-            $"Clan renamed to '{committedClan.Name}'.");
+            ClanLocalization.EncodeStatus("clan_status_profile_updated"));
     }
 
     private static ClanState CommitClanProfile(
@@ -1919,12 +1989,7 @@ internal static class ClanRegistry
         }
 
         target.Name = ClanDataRules.RequireClanName(clanName);
-        target.Description = ClanDataRules.RequireText(
-            description,
-            ClanDataRules.MaxClanDescriptionLength,
-            "clan description",
-            allowEmpty: true,
-            allowLineBreaks: false);
+        target.Description = ClanDataRules.RequireClanDescription(description);
         target.EmblemKey = ClanDataRules.RequireClanEmblemKey(emblemKey);
 
         byte[] bytes = SerializeSave(document);
@@ -1957,13 +2022,13 @@ internal static class ClanRegistry
         ClanState? clan = FindEffectiveClan(actor, requestedClanId);
         if (clan == null || !clan.Members.TryGetValue(actor.Id, out ClanMember member))
         {
-            return "You are not connected to the selected clan.";
+            return ClanLocalization.EncodeStatus("clan_status_not_connected_to_selected_clan");
         }
 
         if (clan.IsLeader(actor) &&
             clan.Members.Values.Count(member => member.Role != ClanRole.Guest) > 1)
         {
-            return "Transfer leadership before leaving.";
+            return ClanLocalization.EncodeStatus("clan_status_transfer_before_leaving");
         }
 
         clan.Members.Remove(actor.Id);
@@ -2008,7 +2073,9 @@ internal static class ClanRegistry
                 {
                     SendSnapshotUpdate(
                         affected,
-                        $"Clan '{clan.Name}' was disbanded.");
+                        ClanLocalization.EncodeStatus(
+                            "clan_status_disbanded_notice",
+                            clan.Name));
                 }
             }
             foreach (ClanState fallbackClan in fallbackClans)
@@ -2016,19 +2083,24 @@ internal static class ClanRegistry
                 BroadcastSnapshots(fallbackClan, "");
             }
 
-            return $"Clan '{clan.Name}' disbanded.";
+            return ClanLocalization.EncodeStatus("clan_status_disbanded", clan.Name);
         }
 
         Save(wardAuthorizationChanged: true);
-        BroadcastSnapshots(clan, $"{actor.Name} left {clan.Name}.");
+        BroadcastSnapshots(
+            clan,
+            ClanLocalization.EncodeStatus(
+                "clan_status_left_notice",
+                actor.Name,
+                clan.Name));
         ClanState? currentEffectiveClan = FindActiveClan(actor);
         if (currentEffectiveClan != null && !ReferenceEquals(currentEffectiveClan, clan))
         {
             BroadcastSnapshots(currentEffectiveClan, "", actor.Id);
         }
         return member.Role == ClanRole.Guest
-            ? $"Left {clan.Name} guest access."
-            : $"Left {clan.Name}.";
+            ? ClanLocalization.EncodeStatus("clan_status_left_guest", clan.Name)
+            : ClanLocalization.EncodeStatus("clan_status_left", clan.Name);
     }
 
     private static string SendClanChat(
@@ -2040,7 +2112,7 @@ internal static class ClanRegistry
         if (clan == null ||
             !clan.Members.TryGetValue(actor.Id, out ClanMember member))
         {
-            return "You are not connected to the selected clan.";
+            return ClanLocalization.EncodeStatus("clan_status_not_connected_to_selected_clan");
         }
 
         string message = ClanDataRules.RequireText(
@@ -2070,7 +2142,7 @@ internal static class ClanRegistry
         if (clan == null ||
             !clan.Members.TryGetValue(actor.Id, out ClanMember member))
         {
-            return "You are not connected to the selected clan.";
+            return ClanLocalization.EncodeStatus("clan_status_not_connected_to_selected_clan");
         }
 
         ClanDataRules.RequireFiniteVector(position, "ping position");
@@ -2123,12 +2195,6 @@ internal static class ClanRegistry
         return ReferenceEquals(FindActiveClan(member.Player), clan);
     }
 
-    private static ClanState? RequireLeader(ClanPlayerRef actor)
-    {
-        ClanState? clan = FindActiveClan(actor);
-        return clan != null && clan.IsLeader(actor) ? clan : null;
-    }
-
     private static ClanState? RequirePermission(
         ClanPlayerRef actor,
         string requestedClanId,
@@ -2146,6 +2212,22 @@ internal static class ClanRegistry
     private static bool CanModerate(ClanMember member)
     {
         return member.Role is ClanRole.Leader or ClanRole.Officer;
+    }
+
+    private static string EncodeRoleStatus(
+        string keyPrefix,
+        ClanRole role,
+        params object[] arguments)
+    {
+        string suffix = role switch
+        {
+            ClanRole.Leader => "leader",
+            ClanRole.Officer => "officer",
+            ClanRole.Member => "member",
+            ClanRole.Guest => "guest",
+            _ => throw new InvalidDataException("Clan role is unsupported.")
+        };
+        return ClanLocalization.EncodeStatus(keyPrefix + suffix, arguments);
     }
 
     private static bool CanAffectMember(ClanState clan, ClanPlayerRef actor, ClanMember target)
@@ -2171,7 +2253,7 @@ internal static class ClanRegistry
             throw new InvalidOperationException(
                 "Player must leave their current guest clan before joining another as Guest.");
         }
-        if (clan.Members.Count >= GetEffectiveMemberLimit())
+        if (clan.Members.Count >= ClanDataRules.MaxMembersPerClan)
         {
             throw new InvalidOperationException($"Clan '{clan.Name}' has reached the member limit.");
         }
@@ -2197,15 +2279,6 @@ internal static class ClanRegistry
                 $"Membership index for '{member.Player.Id}' in clan '{clan.ClanId}' is inconsistent.");
         }
         index.Remove(member.Player.Id);
-    }
-
-    private static int GetEffectiveMemberLimit()
-    {
-        return Math.Max(
-            1,
-            Math.Min(
-                ClanDataRules.MaxMembersPerClan,
-                ClanPlugin.MaxClanMembers.Value));
     }
 
     private static ClanState? RemoveApplication(string playerId)
@@ -2291,7 +2364,9 @@ internal static class ClanRegistry
         {
             if (notifiedPlayerIds.Add(member.Player.Id))
             {
-                SendSnapshotUpdate(member.Player, "Clan profile updated.");
+                SendSnapshotUpdate(
+                    member.Player,
+                    ClanLocalization.EncodeStatus("clan_status_profile_updated"));
             }
         }
 
@@ -2299,7 +2374,9 @@ internal static class ClanRegistry
         {
             if (notifiedPlayerIds.Add(applicant.Id))
             {
-                SendSnapshotUpdate(applicant, "Clan profile updated.");
+                SendSnapshotUpdate(
+                    applicant,
+                    ClanLocalization.EncodeStatus("clan_status_profile_updated"));
             }
         }
 
@@ -2308,7 +2385,9 @@ internal static class ClanRegistry
             if (StringComparer.Ordinal.Equals(invite.ClanId, clan.ClanId) &&
                 notifiedPlayerIds.Add(invite.Target.Id))
             {
-                SendSnapshotUpdate(invite.Target, "Clan profile updated.");
+                SendSnapshotUpdate(
+                    invite.Target,
+                    ClanLocalization.EncodeStatus("clan_status_profile_updated"));
             }
         }
     }
@@ -2424,7 +2503,7 @@ internal static class ClanRegistry
         }
     }
 
-    private static bool TryFindOnlinePlayerById(string targetId, out ClanPlayerRef player)
+    private static bool TryFindKnownPlayerById(string targetId, out ClanPlayerRef player)
     {
         string id = ClanDataRules.RequirePlayerKey(targetId, "target player key");
         foreach (ClanPlayerRef online in ClanIdentity.GetOnlinePlayerRefs())
@@ -2436,18 +2515,6 @@ internal static class ClanRegistry
             }
         }
 
-        player = default;
-        return false;
-    }
-
-    private static bool TryFindKnownPlayerById(string targetId, out ClanPlayerRef player)
-    {
-        if (TryFindOnlinePlayerById(targetId, out player))
-        {
-            return true;
-        }
-
-        string id = ClanDataRules.RequirePlayerKey(targetId, "target player key");
         return ClanRecentPlayers.TryGetPlayer(id, out player);
     }
 
@@ -2492,96 +2559,122 @@ internal static class ClanRegistry
 
     private static string ResolveSaveFile()
     {
-        return Path.Combine(Paths.ConfigPath, ClanPlugin.ModName, "clans.yml");
+        return Path.Combine(ClanPlugin.DataDirectory, "clans.yml");
     }
 
     private static RegistryData Load(string saveFile)
     {
         string backupFile = saveFile + ".bak";
-        if (!File.Exists(saveFile))
+        if (TryLoadSave(
+                saveFile,
+                out _,
+                out RegistryData? primary,
+                out Exception? primaryError))
         {
-            if (!File.Exists(backupFile))
-            {
-                return new RegistryData();
-            }
-
-            byte[] backupBytes;
-            RegistryData recovered;
-            try
-            {
-                backupBytes = ReadSaveBytes(backupFile);
-                recovered = ParseSave(backupBytes);
-            }
-            catch (Exception backupError)
-            {
-                string quarantinedBackup = QuarantineUnsupportedSave(backupFile);
-                ClanPlugin.ClanLogger.LogWarning(
-                    $"Clan save was missing and its backup was unsupported or invalid. " +
-                    $"The backup was moved to {quarantinedBackup}; the clan registry will start empty: " +
-                    backupError.Message);
-                return new RegistryData();
-            }
-
-            WriteAtomically(saveFile, backupBytes);
-            ClanPlugin.ClanLogger.LogWarning(
-                $"Clan save was missing. Restored {recovered.ClansById.Count} clans from " +
-                $"the validated backup {backupFile} to {saveFile}.");
-            return recovered;
+            ClanPlugin.ClanLogger.LogInfo(
+                $"Loaded {primary!.ClansById.Count} clans from {saveFile}.");
+            return primary!;
         }
 
+        if (primaryError == null)
+        {
+            if (!TryLoadSave(
+                    backupFile,
+                    out byte[]? backupBytes,
+                    out RegistryData? recovered,
+                    out Exception? backupError))
+            {
+                if (backupError != null)
+                {
+                    string quarantinedBackup = QuarantineUnsupportedSave(backupFile);
+                    ClanPlugin.ClanLogger.LogWarning(
+                        $"Clan save was missing and its backup was unsupported or invalid. " +
+                        $"The backup was moved to {quarantinedBackup}; the clan registry will start empty: " +
+                        backupError.Message);
+                }
+
+                return new RegistryData();
+            }
+
+            WriteAtomically(saveFile, backupBytes!);
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Clan save was missing. Restored {recovered!.ClansById.Count} clans from " +
+                $"the validated backup {backupFile} to {saveFile}.");
+            return recovered!;
+        }
+
+        byte[]? recoveryBytes = null;
+        RegistryData? recovery = null;
+        Exception? recoveryError = null;
+        if (TryLoadSave(
+                backupFile,
+                out recoveryBytes,
+                out recovery,
+                out recoveryError))
+        {
+            string quarantinedPrimary = QuarantineUnsupportedSave(saveFile);
+            WriteAtomically(saveFile, recoveryBytes!);
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Clan save was unsupported or invalid and was moved to {quarantinedPrimary}: " +
+                $"{primaryError.Message} Restored {recovery!.ClansById.Count} clans from " +
+                $"the validated same-version backup {backupFile}.");
+            return recovery!;
+        }
+
+        string quarantinedPrimaryWithoutRecovery = QuarantineUnsupportedSave(saveFile);
+        if (recoveryError != null)
+        {
+            string quarantinedBackup = QuarantineUnsupportedSave(backupFile);
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Clan save was unsupported or invalid and was moved to {quarantinedPrimaryWithoutRecovery}: " +
+                $"{primaryError.Message} Its backup was also unsupported or invalid and was moved " +
+                $"to {quarantinedBackup}: {recoveryError.Message} The clan registry will start empty.");
+        }
+        else
+        {
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Clan save was unsupported or invalid and was moved to {quarantinedPrimaryWithoutRecovery}: " +
+                $"{primaryError.Message} No backup was available; the clan registry will start empty.");
+        }
+
+        return new RegistryData();
+    }
+
+    private static bool TryLoadSave(
+        string saveFile,
+        out byte[]? bytes,
+        out RegistryData? data,
+        out Exception? invalidContent)
+    {
+        bytes = null;
+        data = null;
+        invalidContent = null;
         try
         {
-            byte[] bytes = ReadSaveBytes(saveFile);
-            RegistryData data = ParseSave(bytes);
-            ClanPlugin.ClanLogger.LogInfo($"Loaded {data.ClansById.Count} clans from {saveFile}.");
-            return data;
+            bytes = ReadSaveBytes(saveFile);
+            data = ParseSave(bytes);
+            return true;
         }
-        catch (Exception primaryError)
+        catch (FileNotFoundException)
         {
-            byte[]? backupBytes = null;
-            RegistryData? recovered = null;
-            Exception? backupError = null;
-            if (File.Exists(backupFile))
-            {
-                try
-                {
-                    backupBytes = ReadSaveBytes(backupFile);
-                    recovered = ParseSave(backupBytes);
-                }
-                catch (Exception ex)
-                {
-                    backupError = ex;
-                }
-            }
-
-            string quarantinedPrimary = QuarantineUnsupportedSave(saveFile);
-            if (recovered != null && backupBytes != null)
-            {
-                WriteAtomically(saveFile, backupBytes);
-                ClanPlugin.ClanLogger.LogWarning(
-                    $"Clan save was unsupported or invalid and was moved to {quarantinedPrimary}: " +
-                    $"{primaryError.Message} Restored {recovered.ClansById.Count} clans from " +
-                    $"the validated same-version backup {backupFile}.");
-                return recovered;
-            }
-
-            if (backupError != null)
-            {
-                string quarantinedBackup = QuarantineUnsupportedSave(backupFile);
-                ClanPlugin.ClanLogger.LogWarning(
-                    $"Clan save was unsupported or invalid and was moved to {quarantinedPrimary}: " +
-                    $"{primaryError.Message} Its backup was also unsupported or invalid and was moved " +
-                    $"to {quarantinedBackup}: {backupError.Message} The clan registry will start empty.");
-            }
-            else
-            {
-                ClanPlugin.ClanLogger.LogWarning(
-                    $"Clan save was unsupported or invalid and was moved to {quarantinedPrimary}: " +
-                    $"{primaryError.Message} No backup was available; the clan registry will start empty.");
-            }
-
-            return new RegistryData();
+            return false;
         }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception error) when (IsInvalidSaveContent(error))
+        {
+            invalidContent = error;
+            return false;
+        }
+    }
+
+    private static bool IsInvalidSaveContent(Exception error)
+    {
+        return error is InvalidDataException or
+            DecoderFallbackException or
+            YamlDotNet.Core.YamlException;
     }
 
     private static RegistryData ParseSave(byte[] bytes)
@@ -2734,12 +2827,7 @@ internal static class ClanRegistry
         {
             CreationOrder = RequireClanCreationOrder(source.CreationOrder),
             Name = ClanDataRules.RequireClanName(source.Name),
-            Description = ClanDataRules.RequireText(
-                source.Description,
-                ClanDataRules.MaxClanDescriptionLength,
-                "clan description",
-                allowEmpty: true,
-                allowLineBreaks: false),
+            Description = ClanDataRules.RequireClanDescription(source.Description),
             EmblemKey = ClanDataRules.RequireClanEmblemKey(source.EmblemKey)
         };
 
@@ -3151,12 +3239,7 @@ internal static class ClanRegistry
             ClanId = ClanDataRules.RequireClanId(clan.ClanId),
             CreationOrder = RequireClanCreationOrder(clan.CreationOrder),
             Name = ClanDataRules.RequireClanName(clan.Name),
-            Description = ClanDataRules.RequireText(
-                clan.Description,
-                ClanDataRules.MaxClanDescriptionLength,
-                "clan description",
-                allowEmpty: true,
-                allowLineBreaks: false),
+            Description = ClanDataRules.RequireClanDescription(clan.Description),
             EmblemKey = ClanDataRules.RequireClanEmblemKey(clan.EmblemKey),
             Members = members,
             Applications = applications
@@ -3327,7 +3410,14 @@ internal static class ClanRegistry
                 $"Clan save exceeds the {MaximumSaveBytes}-byte limit.");
         }
 
-        return File.ReadAllBytes(saveFile);
+        byte[] bytes = File.ReadAllBytes(saveFile);
+        if (bytes.Length > MaximumSaveBytes)
+        {
+            throw new InvalidDataException(
+                $"Clan save exceeds the {MaximumSaveBytes}-byte limit.");
+        }
+
+        return bytes;
     }
 
     private static string QuarantineUnsupportedSave(string saveFile)

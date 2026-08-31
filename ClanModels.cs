@@ -76,6 +76,27 @@ internal enum ClanDirectoryPlayerState
     Invited = 3
 }
 
+internal enum ClanValidationField
+{
+    None = 0,
+    ClanName = 1,
+    ClanDescription = 2,
+    ClanEmblemKey = 3
+}
+
+internal enum ClanValidationError
+{
+    Required = 0,
+    TooLong = 1,
+    RichText = 2,
+    ControlCharacters = 3,
+    InvalidUnicode = 4,
+    InvalidCharacters = 5,
+    TrailingSeparator = 6,
+    MissingLetterOrNumber = 7,
+    InvalidStartOrEnd = 8
+}
+
 internal static class ClanDataRules
 {
     public const int MaxPlatformIdLength = 128;
@@ -96,25 +117,37 @@ internal static class ClanDataRules
     public const int MaxHudPlayers = 10;
     public const float MaxHudHealth = 1_000_000f;
 
+    private static readonly object ValidationErrorDataKey = new();
+
     public static string RequireText(
         string? value,
         int maxLength,
         string fieldName,
         bool allowEmpty = true,
-        bool allowLineBreaks = false)
+        bool allowLineBreaks = false,
+        ClanValidationField validationField = ClanValidationField.None)
     {
         string text = (value ?? "").Trim();
         if (!allowEmpty && text.Length == 0)
         {
-            throw new InvalidDataException($"{fieldName} is required.");
+            throw ValidationFailure(
+                validationField,
+                ClanValidationError.Required,
+                $"{fieldName} is required.");
         }
         if (text.Length > maxLength)
         {
-            throw new InvalidDataException($"{fieldName} exceeds {maxLength} characters.");
+            throw ValidationFailure(
+                validationField,
+                ClanValidationError.TooLong,
+                $"{fieldName} exceeds {maxLength} characters.");
         }
         if (text.IndexOf('<') >= 0 || text.IndexOf('>') >= 0)
         {
-            throw new InvalidDataException($"{fieldName} cannot contain rich-text tags.");
+            throw ValidationFailure(
+                validationField,
+                ClanValidationError.RichText,
+                $"{fieldName} cannot contain rich-text tags.");
         }
 
         foreach (char character in text)
@@ -122,10 +155,41 @@ internal static class ClanDataRules
             if (char.IsControl(character) &&
                 !(allowLineBreaks && (character == '\r' || character == '\n' || character == '\t')))
             {
-                throw new InvalidDataException($"{fieldName} contains unsupported control characters.");
+                throw ValidationFailure(
+                    validationField,
+                    ClanValidationError.ControlCharacters,
+                    $"{fieldName} contains unsupported control characters.");
             }
         }
         return text;
+    }
+
+    public static string RequireClanDescription(
+        string? value,
+        string fieldName = "clan description")
+    {
+        return RequireText(
+            value,
+            MaxClanDescriptionLength,
+            fieldName,
+            allowEmpty: true,
+            allowLineBreaks: false,
+            validationField: ClanValidationField.ClanDescription);
+    }
+
+    public static string ReadClanDescription(
+        ZPackage package,
+        string fieldName = "clan description")
+    {
+        return RequireClanDescription(package.ReadString(), fieldName);
+    }
+
+    public static void WriteClanDescription(
+        ZPackage package,
+        string? value,
+        string fieldName = "clan description")
+    {
+        package.Write(RequireClanDescription(value, fieldName));
     }
 
     public static string RequireClanName(string? value, string fieldName = "clan name")
@@ -137,7 +201,11 @@ internal static class ClanDataRules
         }
         catch (ArgumentException exception)
         {
-            throw new InvalidDataException($"{fieldName} contains invalid Unicode data.", exception);
+            throw ValidationFailure(
+                ClanValidationField.ClanName,
+                ClanValidationError.InvalidUnicode,
+                $"{fieldName} contains invalid Unicode data.",
+                exception);
         }
 
         StringBuilder canonical = new(normalized.Length);
@@ -161,7 +229,10 @@ internal static class ClanDataRules
         string name = canonical.ToString().Trim(' ');
         if (name.Length == 0)
         {
-            throw new InvalidDataException($"{fieldName} is required.");
+            throw ValidationFailure(
+                ClanValidationField.ClanName,
+                ClanValidationError.Required,
+                $"{fieldName} is required.");
         }
 
         int scalarCount = 0;
@@ -176,13 +247,19 @@ internal static class ClanDataRules
             {
                 if (index + 1 >= name.Length || !char.IsLowSurrogate(name[index + 1]))
                 {
-                    throw new InvalidDataException($"{fieldName} contains invalid Unicode data.");
+                    throw ValidationFailure(
+                        ClanValidationField.ClanName,
+                        ClanValidationError.InvalidUnicode,
+                        $"{fieldName} contains invalid Unicode data.");
                 }
                 scalarLength = 2;
             }
             else if (char.IsLowSurrogate(first))
             {
-                throw new InvalidDataException($"{fieldName} contains invalid Unicode data.");
+                throw ValidationFailure(
+                    ClanValidationField.ClanName,
+                    ClanValidationError.InvalidUnicode,
+                    $"{fieldName} contains invalid Unicode data.");
             }
 
             UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(name, index);
@@ -217,14 +294,18 @@ internal static class ClanDataRules
             }
             else
             {
-                throw new InvalidDataException(
+                throw ValidationFailure(
+                    ClanValidationField.ClanName,
+                    ClanValidationError.InvalidCharacters,
                     $"{fieldName} can contain only letters, numbers, marks, spaces, '-', '_', or '·'.");
             }
 
             scalarCount++;
             if (scalarCount > MaxClanNameLength)
             {
-                throw new InvalidDataException(
+                throw ValidationFailure(
+                    ClanValidationField.ClanName,
+                    ClanValidationError.TooLong,
                     $"{fieldName} exceeds {MaxClanNameLength} Unicode characters.");
             }
             index += scalarLength;
@@ -232,11 +313,17 @@ internal static class ClanDataRules
 
         if (previousWasSeparator)
         {
-            throw new InvalidDataException($"{fieldName} cannot end with a separator.");
+            throw ValidationFailure(
+                ClanValidationField.ClanName,
+                ClanValidationError.TrailingSeparator,
+                $"{fieldName} cannot end with a separator.");
         }
         if (!hasLetterOrNumber)
         {
-            throw new InvalidDataException($"{fieldName} must contain a letter or number.");
+            throw ValidationFailure(
+                ClanValidationField.ClanName,
+                ClanValidationError.MissingLetterOrNumber,
+                $"{fieldName} must contain a letter or number.");
         }
         return name;
     }
@@ -451,7 +538,11 @@ internal static class ClanDataRules
 
     public static string RequireClanEmblemKey(string? value, string fieldName = "clan emblem key")
     {
-        string key = RequireText(value, MaxClanEmblemKeyLength, fieldName);
+        string key = RequireText(
+            value,
+            MaxClanEmblemKeyLength,
+            fieldName,
+            validationField: ClanValidationField.ClanEmblemKey);
         if (key.Length == 0)
         {
             return key;
@@ -460,7 +551,9 @@ internal static class ClanDataRules
         if (!IsLowerAsciiLetterOrDigit(key[0]) ||
             !IsLowerAsciiLetterOrDigit(key[key.Length - 1]))
         {
-            throw new InvalidDataException(
+            throw ValidationFailure(
+                ClanValidationField.ClanEmblemKey,
+                ClanValidationError.InvalidStartOrEnd,
                 $"{fieldName} must start and end with a lowercase ASCII letter or digit.");
         }
 
@@ -468,7 +561,9 @@ internal static class ClanDataRules
         {
             if (!IsLowerAsciiLetterOrDigit(character) && character != '_' && character != '-')
             {
-                throw new InvalidDataException(
+                throw ValidationFailure(
+                    ClanValidationField.ClanEmblemKey,
+                    ClanValidationError.InvalidCharacters,
                     $"{fieldName} can contain only lowercase ASCII letters, digits, '_' or '-'.");
             }
         }
@@ -616,18 +711,67 @@ internal static class ClanDataRules
     {
         string text = (value ?? "").Replace("<", " ").Replace(">", " ");
         StringBuilder safe = new(Math.Min(text.Length, MaxPlayerNameLength));
-        foreach (char character in text)
+        for (int index = 0; index < text.Length && safe.Length < MaxPlayerNameLength; index++)
         {
-            if (!char.IsControl(character))
+            char character = text[index];
+            if (char.IsControl(character))
             {
-                safe.Append(character);
+                continue;
             }
-            if (safe.Length == MaxPlayerNameLength)
+
+            bool isSurrogatePair = char.IsHighSurrogate(character) &&
+                                   index + 1 < text.Length &&
+                                   char.IsLowSurrogate(text[index + 1]);
+            if (char.IsSurrogate(character) && !isSurrogatePair)
+            {
+                continue;
+            }
+
+            int characterLength = isSurrogatePair ? 2 : 1;
+            if (safe.Length > MaxPlayerNameLength - characterLength)
             {
                 break;
             }
+
+            safe.Append(character);
+            if (isSurrogatePair)
+            {
+                safe.Append(text[++index]);
+            }
         }
         return safe.ToString().Trim();
+    }
+
+    public static bool TryGetValidationError(
+        InvalidDataException exception,
+        out ClanValidationField field,
+        out ClanValidationError error)
+    {
+        if (exception.Data[ValidationErrorDataKey] is
+            ValueTuple<ClanValidationField, ClanValidationError> metadata)
+        {
+            field = metadata.Item1;
+            error = metadata.Item2;
+            return true;
+        }
+
+        field = ClanValidationField.None;
+        error = default;
+        return false;
+    }
+
+    private static InvalidDataException ValidationFailure(
+        ClanValidationField field,
+        ClanValidationError error,
+        string message,
+        Exception? innerException = null)
+    {
+        InvalidDataException exception = new(message, innerException);
+        if (field != ClanValidationField.None)
+        {
+            exception.Data[ValidationErrorDataKey] = (field, error);
+        }
+        return exception;
     }
 
     private static bool IsFinite(float value)
@@ -806,11 +950,7 @@ internal sealed class ClanRequest
             case ClanRequestType.CreateClan:
                 package.Write(ClanDataRules.RequireRequestId(RequestId));
                 ClanDataRules.WriteClanName(package, ClanName);
-                ClanDataRules.WriteText(
-                    package,
-                    Description,
-                    ClanDataRules.MaxClanDescriptionLength,
-                    "clan description");
+                ClanDataRules.WriteClanDescription(package, Description);
                 ClanDataRules.WriteClanEmblemKey(package, EmblemKey);
                 return;
             case ClanRequestType.Invite:
@@ -838,11 +978,7 @@ internal sealed class ClanRequest
                 package.Write(ClanDataRules.RequireRequestId(RequestId));
                 ClanDataRules.WriteClanId(package, ClanId);
                 ClanDataRules.WriteClanName(package, ClanName);
-                ClanDataRules.WriteText(
-                    package,
-                    Description,
-                    ClanDataRules.MaxClanDescriptionLength,
-                    "clan description");
+                ClanDataRules.WriteClanDescription(package, Description);
                 ClanDataRules.WriteClanEmblemKey(package, EmblemKey);
                 return;
             case ClanRequestType.RenameClan:
@@ -896,10 +1032,7 @@ internal sealed class ClanRequest
             case ClanRequestType.CreateClan:
                 request.RequestId = ClanDataRules.RequireRequestId(package.ReadLong());
                 request.ClanName = ClanDataRules.ReadClanName(package);
-                request.Description = ClanDataRules.ReadText(
-                    package,
-                    ClanDataRules.MaxClanDescriptionLength,
-                    "clan description");
+                request.Description = ClanDataRules.ReadClanDescription(package);
                 request.EmblemKey = ClanDataRules.ReadClanEmblemKey(package);
                 break;
             case ClanRequestType.Invite:
@@ -927,10 +1060,7 @@ internal sealed class ClanRequest
                 request.RequestId = ClanDataRules.RequireRequestId(package.ReadLong());
                 request.ClanId = ClanDataRules.ReadClanId(package);
                 request.ClanName = ClanDataRules.ReadClanName(package);
-                request.Description = ClanDataRules.ReadText(
-                    package,
-                    ClanDataRules.MaxClanDescriptionLength,
-                    "clan description");
+                request.Description = ClanDataRules.ReadClanDescription(package);
                 request.EmblemKey = ClanDataRules.ReadClanEmblemKey(package);
                 break;
             case ClanRequestType.RenameClan:
@@ -1119,11 +1249,7 @@ internal sealed class ClanPublicSummary
     {
         ClanDataRules.WriteClanId(package, ClanId);
         ClanDataRules.WriteClanName(package, Name);
-        ClanDataRules.WriteText(
-            package,
-            Description,
-            ClanDataRules.MaxClanDescriptionLength,
-            "clan description");
+        ClanDataRules.WriteClanDescription(package, Description);
         ClanDataRules.WriteClanEmblemKey(package, EmblemKey);
         ClanDataRules.WritePlayerName(package, LeaderName, "clan leader name");
         package.Write(ClanDataRules.RequireRange(
@@ -1134,10 +1260,7 @@ internal sealed class ClanPublicSummary
     {
         ClanId = ClanDataRules.ReadClanId(package),
         Name = ClanDataRules.ReadClanName(package),
-        Description = ClanDataRules.ReadText(
-            package,
-            ClanDataRules.MaxClanDescriptionLength,
-            "clan description"),
+        Description = ClanDataRules.ReadClanDescription(package),
         EmblemKey = ClanDataRules.ReadClanEmblemKey(package),
         LeaderName = ClanDataRules.ReadPlayerName(package, "clan leader name"),
         MemberCount = ClanDataRules.RequireRange(
@@ -1255,11 +1378,7 @@ internal sealed class ClanClientSnapshot
         package.Write((int)ClanDataRules.RequireEnum(ResponseResultCode, "operation result"));
         ClanDataRules.WriteOptionalClanId(package, ClanId);
         ClanDataRules.WriteOptionalClanName(package, ClanName);
-        ClanDataRules.WriteText(
-            package,
-            ClanDescription,
-            ClanDataRules.MaxClanDescriptionLength,
-            "clan description");
+        ClanDataRules.WriteClanDescription(package, ClanDescription);
         ClanDataRules.WriteClanEmblemKey(package, ClanEmblemKey);
         package.Write((int)ClanDataRules.RequireEnum(SelfRole, "self role"));
         ClanDataRules.WriteOptionalClanId(package, PrimaryClanId, "primary clan id");
@@ -1307,10 +1426,7 @@ internal sealed class ClanClientSnapshot
                 "operation result"),
             ClanId = ClanDataRules.ReadOptionalClanId(package),
             ClanName = ClanDataRules.ReadOptionalClanName(package),
-            ClanDescription = ClanDataRules.ReadText(
-                package,
-                ClanDataRules.MaxClanDescriptionLength,
-                "clan description"),
+            ClanDescription = ClanDataRules.ReadClanDescription(package),
             ClanEmblemKey = ClanDataRules.ReadClanEmblemKey(package),
             SelfRole = ClanDataRules.ReadEnum<ClanRole>(package, "self role"),
             PrimaryClanId = ClanDataRules.ReadOptionalClanId(package, "primary clan id"),

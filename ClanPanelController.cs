@@ -25,10 +25,7 @@ internal static class ClanPanelController
     private const float LeftPaneWidth = 358f;
     private const float RightPaneWidth = 408f;
     private const float RightContentWidth = 412f;
-    private const float ScrollSensitivity = 196f;
     private const float PanelScrollbarWidth = 2f;
-    private const float UnderfilledScrollSensitivity = 35f;
-    private const float UnderfilledScrollElasticity = 0.07f;
     private const float ScrollOverflowEpsilon = 0.5f;
 
     private static readonly Color PanelColor = new(0.32f, 0.2f, 0.11f, 0.98f);
@@ -48,7 +45,6 @@ internal static class ClanPanelController
     private static readonly Color DisabledButtonLabelColor = new(0.4f, 0.4f, 0.4f, 0.9f);
     private static readonly Color MutedColor = new(0.853f, 0.725f, 0.533f, 1f);
     private static readonly Color AccentColor = new(1f, 0.631f, 0.235f, 1f);
-    private static readonly Vector3[] WorldCorners = new Vector3[4];
 
     private enum PanelTab
     {
@@ -70,6 +66,7 @@ internal static class ClanPanelController
     private static RectTransform? _overlayRoot;
     private static Button? _profileActionButton;
     private static Button? _membersTabButton;
+    private static Text? _membersTabButtonLabel;
     private static Button? _playersTabButton;
     private static InputField? _clanSearchInput;
     private static InputField? _playerSearchInput;
@@ -177,9 +174,12 @@ internal static class ClanPanelController
         }
     }
 
-    public static void Build(Transform parent, RectTransform overlayRoot)
+    public static void Build(
+        Transform parent,
+        RectTransform overlayRoot,
+        bool preserveInteractionState = false)
     {
-        DestroyView();
+        DestroyView(preserveInteractionState);
 
         _overlayRoot = overlayRoot;
         _snapshot = ClanRpc.CurrentSnapshot;
@@ -205,6 +205,8 @@ internal static class ClanPanelController
 
     public static void Tick()
     {
+        RefreshMembersNotificationPulse();
+
         if (IsOpen && !_editorOpen)
         {
             if (_clanRowsDirty)
@@ -232,7 +234,7 @@ internal static class ClanPanelController
             : Time.unscaledTime + MutationDirectoryRefreshDelay;
     }
 
-    public static void DestroyView()
+    public static void DestroyView(bool preserveInteractionState = false)
     {
         ClanUiFeedback.HideTooltip();
         ClearOwnedSelection();
@@ -243,6 +245,7 @@ internal static class ClanPanelController
         _overlayRoot = null;
         _profileActionButton = null;
         _membersTabButton = null;
+        _membersTabButtonLabel = null;
         _playersTabButton = null;
         _clanSearchInput = null;
         _playerSearchInput = null;
@@ -253,15 +256,18 @@ internal static class ClanPanelController
         _editorErrorBanner = null;
         _editorErrorLabel = null;
         _positionValid = false;
-        _editorOpen = false;
-        ClearEditorSubmission();
-        ClearEditorError();
-        _directoryRefreshAt = float.PositiveInfinity;
+        if (!preserveInteractionState)
+        {
+            _editorOpen = false;
+            ClearEditorSubmission();
+            ClearEditorError();
+            _directoryRefreshAt = float.PositiveInfinity;
+            ClearConfirmation();
+        }
         _directoryPendingAtLastBuild = false;
         _resetClanScrollOnNextPopulate = false;
         _clanRowsDirty = false;
         _peopleRowsDirty = false;
-        ClearConfirmation();
 
         if (root != null)
         {
@@ -349,7 +355,7 @@ internal static class ClanPanelController
                RectTransformUtility.RectangleContainsScreenPoint(
                    _rootRect,
                    pointerPosition,
-                   GetCanvasCamera(_rootRect));
+                   ClanUiFactory.GetCanvasCamera(_rootRect));
     }
 
     public static void RefreshPosition(RectTransform overlayRoot)
@@ -429,8 +435,8 @@ internal static class ClanPanelController
                 ClearEditorSubmission();
                 ShowEditorError(
                     string.IsNullOrWhiteSpace(_snapshot.Status)
-                        ? "The clan profile could not be saved."
-                        : _snapshot.Status);
+                        ? ClanLocalization.Text("panel_profile_save_failed")
+                        : ClanLocalization.ResolveStatus(_snapshot.Status));
                 if (IsOpen)
                 {
                     RebuildView();
@@ -614,6 +620,7 @@ internal static class ClanPanelController
         ClanUiFactory.ClearChildren(_root.transform);
         _profileActionButton = null;
         _membersTabButton = null;
+        _membersTabButtonLabel = null;
         _playersTabButton = null;
         _clanSearchInput = null;
         _playerSearchInput = null;
@@ -651,7 +658,7 @@ internal static class ClanPanelController
 
         Text title = CreateLabel(
             header.transform,
-            "Clan",
+            ClanLocalization.Text("panel_title"),
             10f,
             7f,
             48f,
@@ -667,13 +674,13 @@ internal static class ClanPanelController
             header.transform,
             ClanActionIcon.Edit,
             canCreateClan
-                ? "Create a new clan profile"
+                ? ClanLocalization.Text("panel_tooltip_create_profile")
                 : canEditClan
-                    ? "Edit clan profile"
+                    ? ClanLocalization.Text("panel_tooltip_edit_profile")
                     : _snapshot.HasGuestClan &&
                       _snapshot.PrimaryRole == ClanRole.Leader
-                        ? "Leave the guest clan to edit your primary clan profile"
-                        : "Only the effective clan leader can edit the clan profile",
+                        ? ClanLocalization.Text("panel_tooltip_leave_guest_to_edit")
+                        : ClanLocalization.Text("panel_tooltip_leader_only_edit"),
             canCreateClan ? OpenCreateEditor : OpenEditEditor,
             90f,
             7f,
@@ -692,21 +699,34 @@ internal static class ClanPanelController
             header.transform,
             "ClanSearch",
             _clanSearchQuery,
-            "Search clans...",
+            ClanLocalization.Text("panel_search_clans"),
             136f,
             7f,
             140f,
             34f,
             64,
-            multiline: false,
             fontSize: 11);
         _clanSearchInput.onValueChanged.AddListener(
             new UnityAction<string>(OnClanSearchChanged));
 
+        if (ZNet.instance?.IsServer() == true)
+        {
+            Button openMediaDirectoryButton = CreateIconButton(
+                header.transform,
+                ClanActionIcon.Folder,
+                ClanLocalization.Text("panel_tooltip_open_media_folder"),
+                OpenClanMediaDirectory,
+                282f,
+                7f,
+                40f,
+                34f);
+            openMediaDirectoryButton.name = "OpenClanMediaDirectory";
+        }
+
         bool membersActive = _tab == PanelTab.Members;
         _membersTabButton = CreateButton(
             header.transform,
-            "Members",
+            ClanLocalization.Text("panel_tab_members"),
             () => SelectTab(PanelTab.Members),
             rightContentX,
             7f,
@@ -714,14 +734,14 @@ internal static class ClanPanelController
             34f,
             membersActive ? ActiveButtonColor : InactiveToggleButtonColor,
             13);
-        SetButtonLabelColor(
-            _membersTabButton,
-            membersActive ? Color.white : InactiveButtonLabelColor);
+        _membersTabButtonLabel =
+            _membersTabButton.GetComponentInChildren<Text>(includeInactive: true);
+        RefreshMembersNotificationPulse();
 
         bool playersActive = _tab == PanelTab.Players;
         _playersTabButton = CreateButton(
             header.transform,
-            "Players",
+            ClanLocalization.Text("panel_tab_players"),
             () => SelectTab(PanelTab.Players),
             rightContentX + 100f,
             7f,
@@ -737,13 +757,12 @@ internal static class ClanPanelController
             header.transform,
             "PlayerSearch",
             _playerSearchQuery,
-            "Search player/clan...",
+            ClanLocalization.Text("panel_search_player_clan"),
             rightContentX + 200f,
             7f,
             140f,
             34f,
             64,
-            multiline: false,
             fontSize: 11);
         _playerSearchInput.onValueChanged.AddListener(
             new UnityAction<string>(OnPlayerSearchChanged));
@@ -760,6 +779,28 @@ internal static class ClanPanelController
             20);
     }
 
+    private static void OpenClanMediaDirectory()
+    {
+        if (GUIManager.IsHeadless() || ZNet.instance?.IsServer() != true)
+        {
+            return;
+        }
+
+        string path = "";
+        try
+        {
+            path = Path.GetFullPath(ClanPlugin.MediaDirectory);
+            Directory.CreateDirectory(path);
+            ClanUiFeedback.HideTooltip();
+            Application.OpenURL(path + Path.DirectorySeparatorChar);
+        }
+        catch (Exception exception)
+        {
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Could not open Clan media directory '{path}': {exception.Message}");
+        }
+    }
+
     private static void RefreshHeaderState()
     {
         Button? profileAction = _profileActionButton;
@@ -768,13 +809,13 @@ internal static class ClanPanelController
             bool canCreateClan = !_snapshot.HasAnyClan;
             bool canEditClan = _snapshot.IsLeader;
             string tooltip = canCreateClan
-                ? "Create a new clan profile"
+                ? ClanLocalization.Text("panel_tooltip_create_profile")
                 : canEditClan
-                    ? "Edit clan profile"
+                    ? ClanLocalization.Text("panel_tooltip_edit_profile")
                     : _snapshot.HasGuestClan &&
                       _snapshot.PrimaryRole == ClanRole.Leader
-                        ? "Leave the guest clan to edit your primary clan profile"
-                        : "Only the effective clan leader can edit the clan profile";
+                        ? ClanLocalization.Text("panel_tooltip_leave_guest_to_edit")
+                        : ClanLocalization.Text("panel_tooltip_leader_only_edit");
             profileAction.name = canCreateClan
                 ? "CreateClanProfile"
                 : "EditClanProfile";
@@ -796,9 +837,7 @@ internal static class ClanPanelController
             SetButtonColor(
                 _membersTabButton,
                 membersActive ? ActiveButtonColor : InactiveToggleButtonColor);
-            SetButtonLabelColor(
-                _membersTabButton,
-                membersActive ? Color.white : InactiveButtonLabelColor);
+            RefreshMembersNotificationPulse();
         }
 
         bool playersActive = _tab == PanelTab.Players;
@@ -811,6 +850,25 @@ internal static class ClanPanelController
                 _playersTabButton,
                 playersActive ? Color.white : InactiveButtonLabelColor);
         }
+    }
+
+    private static bool HasPendingApplications()
+    {
+        return _snapshot.CanModerate && _snapshot.Applications.Count > 0;
+    }
+
+    private static void RefreshMembersNotificationPulse()
+    {
+        if (_membersTabButton == null || _membersTabButtonLabel == null)
+        {
+            return;
+        }
+
+        _membersTabButtonLabel.color = HasPendingApplications()
+            ? ClanUiFeedback.GetNotificationPulseColor()
+            : _tab == PanelTab.Members
+                ? Color.white
+                : InactiveButtonLabelColor;
     }
 
     private static void BuildOverview(Transform parent)
@@ -835,7 +893,7 @@ internal static class ClanPanelController
             out _clanScrollContent,
             _clanScrollPosition,
             value => _clanScrollPosition = value,
-            showScrollbar: true);
+            scrollbarTopInset: 4f);
 
         PopulateClanRows();
     }
@@ -867,11 +925,11 @@ internal static class ClanPanelController
         {
             string emptyText = source.Count > 0 &&
                                !string.IsNullOrEmpty(_clanSearchQuery)
-                ? "No clans match the search."
+                ? ClanLocalization.Text("panel_no_clans_match")
                 : ClanRpc.IsDirectoryRequestPending ||
                   !float.IsPositiveInfinity(_directoryRefreshAt)
-                    ? "Loading clan profiles..."
-                    : "No clan profiles are available.";
+                    ? ClanLocalization.Text("panel_loading_clans")
+                    : ClanLocalization.Text("panel_no_clans");
             CreateTopLabel(
                 content,
                 emptyText,
@@ -962,7 +1020,7 @@ internal static class ClanPanelController
 
         Text leader = CreateLabel(
             row.transform,
-            $"Leader {clan.LeaderName}",
+            ClanLocalization.Format("panel_leader_name", clan.LeaderName),
             180f,
             49f,
             76f,
@@ -1001,7 +1059,7 @@ internal static class ClanPanelController
 
             Text badgeLabel = CreateLabel(
                 badge.transform,
-                "Active Guest",
+                ClanLocalization.Text("panel_active_guest"),
                 3f,
                 0f,
                 78f,
@@ -1034,10 +1092,12 @@ internal static class ClanPanelController
             {
                 CreateDisabledClanAction(
                     parent,
-                    "Inactive",
+                    ClanLocalization.Text("panel_action_inactive"),
                     BuildClanRowTooltip(
                         clan,
-                        $"Inactive while Guest in {_snapshot.GuestClanName}"),
+                        ClanLocalization.Format(
+                            "panel_tooltip_inactive_guest",
+                            _snapshot.GuestClanName)),
                     actionX,
                     actionY,
                     actionWidth,
@@ -1056,10 +1116,10 @@ internal static class ClanPanelController
             {
                 CreateDisabledClanAction(
                     parent,
-                    "Transfer",
+                    ClanLocalization.Text("panel_action_transfer"),
                     BuildClanRowTooltip(
                         clan,
-                        "Transfer leadership before leaving the clan."),
+                        ClanLocalization.Text("panel_tooltip_transfer_before_leaving")),
                     actionX,
                     actionY,
                     actionWidth,
@@ -1069,7 +1129,11 @@ internal static class ClanPanelController
 
             Button membershipButton = CreateButton(
                 parent,
-                confirming ? "Confirm?" : disband ? "Disband" : "Leave",
+                confirming
+                    ? ClanLocalization.Text("common_confirm_question")
+                    : disband
+                        ? ClanLocalization.Text("panel_action_disband")
+                        : ClanLocalization.Text("panel_action_leave"),
                 () => ConfirmThen(
                     ConfirmAction.Leave,
                     clan.ClanId,
@@ -1090,10 +1154,14 @@ internal static class ClanPanelController
                 BuildClanRowTooltip(
                     clan,
                     confirming
-                        ? "Click again to confirm."
+                        ? ClanLocalization.Text("common_click_again_confirm")
                         : disband
-                            ? $"Permanently disband {clan.Name}"
-                            : $"Leave {clan.Name}"));
+                            ? ClanLocalization.Format(
+                                "panel_tooltip_disband",
+                                clan.Name)
+                            : ClanLocalization.Format(
+                                "panel_tooltip_leave",
+                                clan.Name)));
             return;
         }
 
@@ -1105,7 +1173,10 @@ internal static class ClanPanelController
                 ClanActionIcon.Accept,
                 BuildClanRowTooltip(
                     clan,
-                    $"Accept {invite.ClanName} invitation from {invite.FromName}"),
+                    ClanLocalization.Format(
+                        "panel_tooltip_accept_invite",
+                        invite.ClanName,
+                        invite.FromName)),
                 () => SendRequest(
                     new ClanRequest
                     {
@@ -1124,7 +1195,10 @@ internal static class ClanPanelController
                 ClanActionIcon.Decline,
                 BuildClanRowTooltip(
                     clan,
-                    $"Decline {invite.ClanName} invitation from {invite.FromName}"),
+                    ClanLocalization.Format(
+                        "panel_tooltip_decline_invite",
+                        invite.ClanName,
+                        invite.FromName)),
                 () => SendRequest(
                     new ClanRequest
                     {
@@ -1148,7 +1222,7 @@ internal static class ClanPanelController
             {
                 Button cancel = CreateButton(
                     parent,
-                    "Cancel",
+                    ClanLocalization.Text("common_cancel"),
                     () => SendRequest(
                         ClanRequest.Simple(ClanRequestType.CancelApplication)),
                     actionX,
@@ -1159,16 +1233,22 @@ internal static class ClanPanelController
                     9);
                 ClanUiFeedback.SetTooltip(
                     cancel,
-                    BuildClanRowTooltip(clan, $"Cancel application to {clan.Name}"));
+                    BuildClanRowTooltip(
+                        clan,
+                        ClanLocalization.Format(
+                            "panel_tooltip_cancel_application",
+                            clan.Name)));
             }
             else
             {
                 CreateDisabledClanAction(
                     parent,
-                    "Pending",
+                    ClanLocalization.Text("panel_state_pending"),
                     BuildClanRowTooltip(
                         clan,
-                        $"Application to {_snapshot.OwnApplicationClanName} is pending."),
+                        ClanLocalization.Format(
+                            "panel_tooltip_application_pending",
+                            _snapshot.OwnApplicationClanName)),
                     actionX,
                     actionY,
                     actionWidth,
@@ -1181,10 +1261,12 @@ internal static class ClanPanelController
         {
             CreateDisabledClanAction(
                 parent,
-                "Unavailable",
+                ClanLocalization.Text("panel_state_unavailable"),
                 BuildClanRowTooltip(
                     clan,
-                    $"Guest slot is already used by {_snapshot.GuestClanName}."),
+                    ClanLocalization.Format(
+                        "panel_tooltip_guest_slot_used",
+                        _snapshot.GuestClanName)),
                 actionX,
                 actionY,
                 actionWidth,
@@ -1194,7 +1276,7 @@ internal static class ClanPanelController
 
         Button apply = CreateButton(
             parent,
-            "Apply",
+            ClanLocalization.Text("panel_action_apply"),
             () => ApplyToClan(clan.ClanId),
             actionX,
             actionY,
@@ -1204,7 +1286,9 @@ internal static class ClanPanelController
             9);
         ClanUiFeedback.SetTooltip(
             apply,
-            BuildClanRowTooltip(clan, $"Apply to {clan.Name}"));
+            BuildClanRowTooltip(
+                clan,
+                ClanLocalization.Format("panel_tooltip_apply", clan.Name)));
     }
 
     private static string BuildClanRowTooltip(
@@ -1212,9 +1296,14 @@ internal static class ClanPanelController
         string action)
     {
         string description = string.IsNullOrWhiteSpace(clan.Description)
-            ? "No description"
+            ? ClanLocalization.Text("panel_no_description")
             : clan.Description;
-        return $"{action}\n\n{clan.Name}\nLeader {clan.LeaderName}\n{description}";
+        return ClanLocalization.Format(
+            "panel_clan_tooltip_summary",
+            action,
+            clan.Name,
+            clan.LeaderName,
+            description);
     }
 
     private static void CreateDisabledClanAction(
@@ -1267,7 +1356,7 @@ internal static class ClanPanelController
             out _peopleScrollContent,
             _rightScrollPosition,
             value => _rightScrollPosition = value,
-            showScrollbar: true);
+            scrollbarTopInset: 6f);
 
         PopulatePeopleRows();
     }
@@ -1303,7 +1392,7 @@ internal static class ClanPanelController
         {
             CreateTopLabel(
                 content,
-                "Join or create a clan to view its roster.",
+                ClanLocalization.Text("panel_join_or_create_for_roster"),
                 8f,
                 top + 12f,
                 RightContentWidth - 16f,
@@ -1336,7 +1425,7 @@ internal static class ClanPanelController
         {
             CreateTopLabel(
                 content,
-                "No players match the search.",
+                ClanLocalization.Text("panel_no_players_match"),
                 8f,
                 top + 12f,
                 RightContentWidth - 16f,
@@ -1368,7 +1457,7 @@ internal static class ClanPanelController
 
                 Text applicationLabel = CreateLabel(
                     row.transform,
-                    "Application",
+                    ClanLocalization.Text("panel_state_application"),
                     151f,
                     10f,
                     111f,
@@ -1421,7 +1510,7 @@ internal static class ClanPanelController
                         row.transform,
                         member,
                         ClanRole.Officer,
-                        "Officer",
+                        ClanLocalization.Role(ClanRole.Officer),
                         201f,
                         48f);
                 }
@@ -1429,14 +1518,14 @@ internal static class ClanPanelController
                     row.transform,
                     member,
                     ClanRole.Member,
-                    "Member",
+                    ClanLocalization.Role(ClanRole.Member),
                     253f,
                     52f);
                 CreateRoleButton(
                     row.transform,
                     member,
                     ClanRole.Guest,
-                    "Guest",
+                    ClanLocalization.Role(ClanRole.Guest),
                     309f,
                     46f);
             }
@@ -1444,7 +1533,7 @@ internal static class ClanPanelController
             {
                 CreateLabel(
                     row.transform,
-                    member.Role.ToString(),
+                    ClanLocalization.Role(member.Role),
                     151f,
                     7f,
                     108f,
@@ -1463,7 +1552,9 @@ internal static class ClanPanelController
                     member.Id);
                 Button leadershipButton = CreateButton(
                     row.transform,
-                    leadConfirm ? "Sure?" : "Leader",
+                    leadConfirm
+                        ? ClanLocalization.Text("common_sure_question")
+                        : ClanLocalization.Role(ClanRole.Leader),
                     () => ConfirmThen(
                         ConfirmAction.TransferLeadership,
                         member.Id,
@@ -1483,8 +1574,12 @@ internal static class ClanPanelController
                 ClanUiFeedback.SetTooltip(
                     leadershipButton,
                     leadConfirm
-                        ? $"Click again to transfer leadership to {member.Name}"
-                        : $"Transfer leadership to {member.Name}");
+                        ? ClanLocalization.Format(
+                            "panel_tooltip_confirm_transfer_leadership",
+                            member.Name)
+                        : ClanLocalization.Format(
+                            "panel_tooltip_transfer_leadership",
+                            member.Name));
             }
 
             if (CanAffectMember(_snapshot, member))
@@ -1492,7 +1587,9 @@ internal static class ClanPanelController
                 bool kickConfirm = IsConfirming(ConfirmAction.Kick, member.Id);
                 CreateButton(
                     row.transform,
-                    kickConfirm ? "Sure?" : "Kick",
+                    kickConfirm
+                        ? ClanLocalization.Text("common_sure_question")
+                        : ClanLocalization.Text("panel_action_kick"),
                     () => ConfirmThen(
                         ConfirmAction.Kick,
                         member.Id,
@@ -1556,8 +1653,14 @@ internal static class ClanPanelController
         ClanUiFeedback.SetTooltip(
             button,
             current
-                ? $"{member.Name} is already {role}"
-                : $"Set {member.Name} to {role}");
+                ? ClanLocalization.Format(
+                    "panel_tooltip_role_already_set",
+                    member.Name,
+                    ClanLocalization.Role(role))
+                : ClanLocalization.Format(
+                    "panel_tooltip_set_role",
+                    member.Name,
+                    ClanLocalization.Role(role)));
         if (!current)
         {
             return;
@@ -1589,10 +1692,10 @@ internal static class ClanPanelController
         {
             string emptyText = source.Count > 0 &&
                                !string.IsNullOrEmpty(_playerSearchQuery)
-                ? "No players or clans match the search."
+                ? ClanLocalization.Text("panel_no_players_or_clans_match")
                 : ClanRpc.IsDirectoryRequestPending
-                    ? "Loading recent players..."
-                    : "No players seen in the last 28 days.";
+                    ? ClanLocalization.Text("panel_loading_recent_players")
+                    : ClanLocalization.Text("panel_no_recent_players");
             CreateTopLabel(
                 content,
                 emptyText,
@@ -1656,7 +1759,7 @@ internal static class ClanPanelController
             {
                 Button invite = CreateButton(
                     row.transform,
-                    "Invite",
+                    ClanLocalization.Text("panel_action_invite"),
                     () => SendRequest(
                         new ClanRequest
                         {
@@ -1671,7 +1774,11 @@ internal static class ClanPanelController
                     ButtonColor,
                     9);
                 invite.name = "InvitePlayer";
-                ClanUiFeedback.SetTooltip(invite, $"Invite {player.PlayerName}");
+                ClanUiFeedback.SetTooltip(
+                    invite,
+                    ClanLocalization.Format(
+                        "panel_tooltip_invite_player",
+                        player.PlayerName));
             }
 
             top += 40f;
@@ -1690,7 +1797,7 @@ internal static class ClanPanelController
     {
         Button accept = CreateButton(
             parent,
-            "Accept",
+            ClanLocalization.Text("panel_action_accept"),
             () => SendRequest(
                 new ClanRequest
                 {
@@ -1707,12 +1814,16 @@ internal static class ClanPanelController
         accept.name = "AcceptApplication";
         ClanUiFeedback.SetTooltip(
             accept,
-            $"Accept {playerName}'s application");
+            ClanLocalization.Format(
+                "panel_tooltip_accept_application",
+                playerName));
 
         bool confirming = IsConfirming(ConfirmAction.RejectApplication, playerId);
         Button decline = CreateButton(
             parent,
-            confirming ? "Decline?" : "Decline",
+            confirming
+                ? ClanLocalization.Text("panel_action_decline_question")
+                : ClanLocalization.Text("panel_action_decline"),
             () => ConfirmThen(
                 ConfirmAction.RejectApplication,
                 playerId,
@@ -1733,8 +1844,12 @@ internal static class ClanPanelController
         ClanUiFeedback.SetTooltip(
             decline,
             confirming
-                ? $"Click again to decline {playerName}'s application"
-                : $"Decline {playerName}'s application");
+                ? ClanLocalization.Format(
+                    "panel_tooltip_confirm_decline_application",
+                    playerName)
+                : ClanLocalization.Format(
+                    "panel_tooltip_decline_application",
+                    playerName));
     }
 
     private static void BuildEditor(Transform parent)
@@ -1766,7 +1881,11 @@ internal static class ClanPanelController
 
         CreateLabel(
             editor.transform,
-            _editorCreating ? "Make a clan" : $"Edit · {_snapshot.ClanName}",
+            _editorCreating
+                ? ClanLocalization.Text("panel_editor_make_clan")
+                : ClanLocalization.Format(
+                    "panel_editor_edit_clan",
+                    _snapshot.ClanName),
             14f,
             426f,
             420f,
@@ -1776,7 +1895,11 @@ internal static class ClanPanelController
             AccentColor);
         Button saveButton = CreateButton(
             editor.transform,
-            _editorSubmissionPending ? "Sending..." : _editorCreating ? "Create clan" : "Save profile",
+            _editorSubmissionPending
+                ? ClanLocalization.Text("panel_editor_sending")
+                : _editorCreating
+                    ? ClanLocalization.Text("panel_editor_create_clan")
+                    : ClanLocalization.Text("panel_editor_save_profile"),
             SubmitEditor,
             448f,
             426f,
@@ -1802,7 +1925,7 @@ internal static class ClanPanelController
 
         CreateLabel(
             editor.transform,
-            "Clan name",
+            ClanLocalization.Text("panel_editor_clan_name"),
             14f,
             394f,
             180f,
@@ -1814,13 +1937,12 @@ internal static class ClanPanelController
             editor.transform,
             "ClanName",
             _draftName,
-            "Name",
+            ClanLocalization.Text("panel_editor_name_placeholder"),
             14f,
             358f,
             620f,
             34f,
-            ClanDataRules.MaxClanNameLength * 2,
-            multiline: false);
+            ClanDataRules.MaxClanNameLength * 2);
         nameInput.interactable = !_editorSubmissionPending;
         nameInput.onValueChanged.AddListener(value =>
         {
@@ -1830,7 +1952,7 @@ internal static class ClanPanelController
 
         CreateLabel(
             editor.transform,
-            "Description",
+            ClanLocalization.Text("panel_editor_description"),
             14f,
             330f,
             180f,
@@ -1842,13 +1964,12 @@ internal static class ClanPanelController
             editor.transform,
             "ClanDescription",
             _draftDescription,
-            "Describe your clan",
+            ClanLocalization.Text("panel_editor_description_placeholder"),
             14f,
             254f,
             620f,
             70f,
-            ClanDataRules.MaxClanDescriptionLength,
-            multiline: false);
+            ClanDataRules.MaxClanDescriptionLength);
         descriptionInput.interactable = !_editorSubmissionPending;
         descriptionInput.onValueChanged.AddListener(value =>
         {
@@ -1858,7 +1979,7 @@ internal static class ClanPanelController
 
         CreateLabel(
             editor.transform,
-            "Static PNG clan emblem",
+            ClanLocalization.Text("panel_editor_emblem"),
             14f,
             226f,
             260f,
@@ -1881,8 +2002,7 @@ internal static class ClanPanelController
             206f,
             out RectTransform content,
             _emblemScrollPosition,
-            value => _emblemScrollPosition = value,
-            showScrollbar: true);
+            value => _emblemScrollPosition = value);
         scroll.enabled = !_editorSubmissionPending;
         IReadOnlyList<ClanEmoji.ClanEmblemPickerItem> emblems = ClanEmoji.GetEmblemPickerItems();
         const int columns = 9;
@@ -1893,7 +2013,7 @@ internal static class ClanPanelController
         bool noEmblemSelected = string.IsNullOrWhiteSpace(_draftEmblemKey);
         Button none = CreateTopButton(
             content,
-            "None",
+            ClanLocalization.Text("common_none"),
             () => SelectDraftEmblem(""),
             5f,
             5f,
@@ -1908,7 +2028,9 @@ internal static class ClanPanelController
             none,
             noEmblemSelected,
             !_editorSubmissionPending);
-        ClanUiFeedback.SetTooltip(none, "Use no clan emblem");
+        ClanUiFeedback.SetTooltip(
+            none,
+            ClanLocalization.Text("panel_tooltip_no_emblem"));
 
         for (int index = 0; index < emblems.Count; index++)
         {
@@ -1937,7 +2059,6 @@ internal static class ClanPanelController
                 button,
                 selected,
                 !_editorSubmissionPending);
-            ClanUiFeedback.SetTooltip(button, emblem.Name);
         }
 
         int rows = Math.Max(1, (itemCount + columns - 1) / columns);
@@ -1994,7 +2115,8 @@ internal static class ClanPanelController
     {
         if (!_snapshot.IsLeader)
         {
-            ClanRpc.NotifyStatus("Only the clan leader can edit the clan profile.");
+            ClanRpc.NotifyStatus(
+                ClanLocalization.Text("panel_error_leader_only_edit"));
             return;
         }
 
@@ -2029,16 +2151,13 @@ internal static class ClanPanelController
         try
         {
             string name = ClanDataRules.RequireClanName(_draftName);
-            string description = ClanDataRules.RequireText(
-                (_draftDescription ?? "").Replace('\r', ' ').Replace('\n', ' '),
-                ClanDataRules.MaxClanDescriptionLength,
-                "clan description",
-                allowEmpty: true,
-                allowLineBreaks: false);
+            string description = ClanDataRules.RequireClanDescription(
+                (_draftDescription ?? "").Replace('\r', ' ').Replace('\n', ' '));
             string emblemKey = ClanDataRules.RequireClanEmblemKey(_draftEmblemKey);
             if (!ClanEmoji.IsAvailableEmblemKey(emblemKey))
             {
-                ShowEditorError("Select a static PNG emblem available in the current clan emblem catalogue.");
+                ShowEditorError(
+                    ClanLocalization.Text("panel_error_select_available_emblem"));
                 return;
             }
 
@@ -2051,7 +2170,8 @@ internal static class ClanPanelController
             {
                 if (_snapshot.HasAnyClan)
                 {
-                    ShowEditorError("Leave your current clan connection before creating another clan.");
+                    ShowEditorError(
+                        ClanLocalization.Text("panel_error_leave_before_create"));
                     return;
                 }
                 request = new ClanRequest
@@ -2066,7 +2186,8 @@ internal static class ClanPanelController
             {
                 if (!_snapshot.IsLeader)
                 {
-                    ShowEditorError("Only the clan leader can edit the clan profile.");
+                    ShowEditorError(
+                        ClanLocalization.Text("panel_error_leader_only_edit"));
                     return;
                 }
                 if (SubmittedProfileMatches(_snapshot))
@@ -2094,7 +2215,8 @@ internal static class ClanPanelController
             if (!ClanRpc.Send(request))
             {
                 ClearEditorSubmission();
-                ShowEditorError("Clan server is not connected.");
+                ShowEditorError(
+                    ClanLocalization.Text("panel_error_server_not_connected"));
                 RebuildView();
                 return;
             }
@@ -2103,7 +2225,7 @@ internal static class ClanPanelController
         catch (InvalidDataException exception)
         {
             ClearEditorSubmission();
-            ShowEditorError(exception.Message);
+            ShowEditorError(LocalizeEditorValidationError(exception));
         }
     }
 
@@ -2113,9 +2235,59 @@ internal static class ClanPanelController
         _editorSubmissionRequestId = 0L;
     }
 
+    private static string LocalizeEditorValidationError(InvalidDataException exception)
+    {
+        if (!ClanDataRules.TryGetValidationError(
+                exception,
+                out ClanValidationField field,
+                out ClanValidationError error))
+        {
+            return ClanLocalization.Text("panel_error_invalid_profile");
+        }
+
+        return (field, error) switch
+        {
+            (ClanValidationField.ClanName, ClanValidationError.Required) =>
+                ClanLocalization.Text("panel_error_name_required"),
+            (ClanValidationField.ClanName, ClanValidationError.InvalidUnicode) =>
+                ClanLocalization.Text("panel_error_name_invalid_unicode"),
+            (ClanValidationField.ClanName, ClanValidationError.InvalidCharacters) =>
+                ClanLocalization.Text("panel_error_name_invalid_characters"),
+            (ClanValidationField.ClanName, ClanValidationError.TooLong) =>
+                ClanLocalization.Format(
+                    "panel_error_name_too_long",
+                    ClanDataRules.MaxClanNameLength),
+            (ClanValidationField.ClanName, ClanValidationError.TrailingSeparator) =>
+                ClanLocalization.Text("panel_error_name_trailing_separator"),
+            (ClanValidationField.ClanName, ClanValidationError.MissingLetterOrNumber) =>
+                ClanLocalization.Text("panel_error_name_letter_number"),
+            (ClanValidationField.ClanDescription, ClanValidationError.TooLong) =>
+                ClanLocalization.Format(
+                    "panel_error_description_too_long",
+                    ClanDataRules.MaxClanDescriptionLength),
+            (ClanValidationField.ClanDescription, ClanValidationError.RichText) =>
+                ClanLocalization.Text("panel_error_description_rich_text"),
+            (ClanValidationField.ClanDescription, ClanValidationError.ControlCharacters) =>
+                ClanLocalization.Text("panel_error_description_control_characters"),
+            (ClanValidationField.ClanEmblemKey, ClanValidationError.TooLong) =>
+                ClanLocalization.Format(
+                    "panel_error_emblem_too_long",
+                    ClanDataRules.MaxClanEmblemKeyLength),
+            (ClanValidationField.ClanEmblemKey, ClanValidationError.RichText) =>
+                ClanLocalization.Text("panel_error_emblem_rich_text"),
+            (ClanValidationField.ClanEmblemKey, ClanValidationError.ControlCharacters) =>
+                ClanLocalization.Text("panel_error_emblem_control_characters"),
+            (ClanValidationField.ClanEmblemKey, ClanValidationError.InvalidStartOrEnd) =>
+                ClanLocalization.Text("panel_error_emblem_start_end"),
+            (ClanValidationField.ClanEmblemKey, ClanValidationError.InvalidCharacters) =>
+                ClanLocalization.Text("panel_error_emblem_invalid_characters"),
+            _ => ClanLocalization.Text("panel_error_invalid_profile")
+        };
+    }
+
     private static void ShowEditorError(string message)
     {
-        _editorError = CleanSingleLine(message);
+        _editorError = ClanUiFactory.CleanSingleLine(message);
         if (_editorErrorLabel != null)
         {
             _editorErrorLabel.text = _editorError;
@@ -2319,10 +2491,12 @@ internal static class ClanPanelController
         return player.State switch
         {
             ClanDirectoryPlayerState.Clan => string.IsNullOrWhiteSpace(player.ClanName)
-                ? "clan"
+                ? ClanLocalization.Text("panel_state_clan")
                 : player.ClanName,
-            ClanDirectoryPlayerState.Pending => "pending",
-            ClanDirectoryPlayerState.Invited => "invited",
+            ClanDirectoryPlayerState.Pending =>
+                ClanLocalization.Text("panel_state_pending_lower"),
+            ClanDirectoryPlayerState.Invited =>
+                ClanLocalization.Text("panel_state_invited"),
             _ => "-"
         };
     }
@@ -2342,19 +2516,21 @@ internal static class ClanPanelController
     {
         if (player.IsOnline)
         {
-            return "online";
+            return ClanLocalization.Text("panel_last_seen_online");
         }
         if (player.LastSeenUtcTicks <= 0L)
         {
-            return "unknown";
+            return ClanLocalization.Text("panel_last_seen_unknown");
         }
 
         TimeSpan age = DateTime.UtcNow - new DateTime(player.LastSeenUtcTicks, DateTimeKind.Utc);
         if (age.TotalHours < 24d)
         {
-            return "today";
+            return ClanLocalization.Text("panel_last_seen_today");
         }
-        return $"{Mathf.Clamp((int)age.TotalDays, 1, 28)}d";
+        return ClanLocalization.Format(
+            "panel_last_seen_days",
+            Mathf.Clamp((int)age.TotalDays, 1, 28));
     }
 
     private static GameObject CreateTopRow(
@@ -2379,7 +2555,7 @@ internal static class ClanPanelController
         out RectTransform content,
         float normalizedPosition,
         Action<float> rememberPosition,
-        bool showScrollbar = false)
+        float scrollbarTopInset = 0f)
     {
         GameObject root = CreateRect(
             name,
@@ -2422,52 +2598,50 @@ internal static class ClanPanelController
         scroll.viewport = viewportObject.GetComponent<RectTransform>();
         scroll.horizontal = false;
         scroll.vertical = true;
-        scroll.movementType = ScrollRect.MovementType.Clamped;
         scroll.inertia = true;
         scroll.decelerationRate = 0.12f;
-        scroll.scrollSensitivity = ScrollSensitivity;
+        ClanUiFactory.ConfigureVerticalScroll(scroll, hasOverflow: true);
         scroll.verticalScrollbar = null;
-        if (showScrollbar)
-        {
-            GameObject scrollbarObject = ClanUiFactory.CreateObject(
-                "Scrollbar",
-                root.transform,
-                typeof(Image),
-                typeof(Scrollbar));
-            RectTransform scrollbarRect =
-                scrollbarObject.GetComponent<RectTransform>();
-            scrollbarRect.anchorMin = new Vector2(1f, 0f);
-            scrollbarRect.anchorMax = new Vector2(1f, 1f);
-            scrollbarRect.pivot = new Vector2(1f, 0.5f);
-            scrollbarRect.offsetMin = new Vector2(-PanelScrollbarWidth, 0f);
-            scrollbarRect.offsetMax = Vector2.zero;
+        GameObject scrollbarObject = ClanUiFactory.CreateObject(
+            "Scrollbar",
+            root.transform,
+            typeof(Image),
+            typeof(Scrollbar));
+        RectTransform scrollbarRect =
+            scrollbarObject.GetComponent<RectTransform>();
+        scrollbarRect.anchorMin = new Vector2(1f, 0f);
+        scrollbarRect.anchorMax = new Vector2(1f, 1f);
+        scrollbarRect.pivot = new Vector2(1f, 0.5f);
+        scrollbarRect.offsetMin = new Vector2(-PanelScrollbarWidth, 0f);
+        scrollbarRect.offsetMax = new Vector2(
+            0f,
+            -Mathf.Clamp(scrollbarTopInset, 0f, height));
 
-            Image scrollbarTrack = scrollbarObject.GetComponent<Image>();
-            scrollbarTrack.color = new Color(0f, 0f, 0f, 0.42f);
+        Image scrollbarTrack = scrollbarObject.GetComponent<Image>();
+        scrollbarTrack.color = new Color(0f, 0f, 0f, 0.42f);
 
-            GameObject handleObject = ClanUiFactory.CreateObject(
-                "Handle",
-                scrollbarObject.transform,
-                typeof(Image));
-            RectTransform handleRect = handleObject.GetComponent<RectTransform>();
-            handleRect.anchorMin = Vector2.zero;
-            handleRect.anchorMax = Vector2.one;
-            handleRect.offsetMin = Vector2.zero;
-            handleRect.offsetMax = Vector2.zero;
-            Image handleImage = handleObject.GetComponent<Image>();
-            handleImage.color = new Color(1f, 0.63f, 0.24f, 0.96f);
+        GameObject handleObject = ClanUiFactory.CreateObject(
+            "Handle",
+            scrollbarObject.transform,
+            typeof(Image));
+        RectTransform handleRect = handleObject.GetComponent<RectTransform>();
+        handleRect.anchorMin = Vector2.zero;
+        handleRect.anchorMax = Vector2.one;
+        handleRect.offsetMin = Vector2.zero;
+        handleRect.offsetMax = Vector2.zero;
+        Image handleImage = handleObject.GetComponent<Image>();
+        handleImage.color = new Color(1f, 0.63f, 0.24f, 0.96f);
 
-            Scrollbar scrollbar = scrollbarObject.GetComponent<Scrollbar>();
-            scrollbar.handleRect = handleRect;
-            scrollbar.targetGraphic = handleImage;
-            scrollbar.direction = Scrollbar.Direction.BottomToTop;
-            scrollbar.transition = Selectable.Transition.None;
-            scrollbar.value = Mathf.Clamp01(normalizedPosition);
-            scroll.verticalScrollbar = scrollbar;
-            scroll.verticalScrollbarVisibility =
-                ScrollRect.ScrollbarVisibility.Permanent;
-            scroll.verticalScrollbarSpacing = 0f;
-        }
+        Scrollbar scrollbar = scrollbarObject.GetComponent<Scrollbar>();
+        scrollbar.handleRect = handleRect;
+        scrollbar.targetGraphic = handleImage;
+        scrollbar.direction = Scrollbar.Direction.BottomToTop;
+        scrollbar.transition = Selectable.Transition.None;
+        scrollbar.value = Mathf.Clamp01(normalizedPosition);
+        scroll.verticalScrollbar = scrollbar;
+        scroll.verticalScrollbarVisibility =
+            ScrollRect.ScrollbarVisibility.Permanent;
+        scroll.verticalScrollbarSpacing = 0f;
         scroll.verticalNormalizedPosition = Mathf.Clamp01(normalizedPosition);
         scroll.onValueChanged.AddListener(
             value => rememberPosition(Mathf.Clamp01(value.y)));
@@ -2482,13 +2656,7 @@ internal static class ClanPanelController
     {
         content.sizeDelta = new Vector2(0f, Mathf.Max(viewportHeight, requestedHeight));
         bool hasOverflow = requestedHeight > viewportHeight + ScrollOverflowEpsilon;
-        scroll.movementType = hasOverflow
-            ? ScrollRect.MovementType.Clamped
-            : ScrollRect.MovementType.Elastic;
-        scroll.scrollSensitivity = hasOverflow
-            ? ScrollSensitivity
-            : UnderfilledScrollSensitivity;
-        scroll.elasticity = UnderfilledScrollElasticity;
+        ClanUiFactory.ConfigureVerticalScroll(scroll, hasOverflow);
     }
 
     private static Button CreateTopButton(
@@ -2601,7 +2769,6 @@ internal static class ClanPanelController
             button,
             icon,
             tooltip,
-            clearButtonText: true,
             displaySize: Mathf.Min(width, height) - 8f);
         return button;
     }
@@ -2632,7 +2799,7 @@ internal static class ClanPanelController
         GameObject labelObject = ClanUiFactory.CreateObject("Text", parent, typeof(Text));
         Text label = labelObject.GetComponent<Text>();
         label.text = text ?? "";
-        label.font = GetFont(bold: true);
+        label.font = ClanUiFactory.GetBoldFont();
         label.fontSize = fontSize;
         label.alignment = alignment;
         label.color = color;
@@ -2653,7 +2820,6 @@ internal static class ClanPanelController
         float width,
         float height,
         int characterLimit,
-        bool multiline,
         int fontSize = 13)
     {
         GameObject root = CreateRect(
@@ -2677,7 +2843,7 @@ internal static class ClanPanelController
             width - 16f,
             height - 8f,
             fontSize,
-            multiline ? TextAnchor.UpperLeft : TextAnchor.MiddleLeft,
+            TextAnchor.MiddleLeft,
             Color.white);
         text.name = "Text";
         text.raycastTarget = false;
@@ -2691,7 +2857,7 @@ internal static class ClanPanelController
             width - 16f,
             height - 8f,
             fontSize,
-            multiline ? TextAnchor.UpperLeft : TextAnchor.MiddleLeft,
+            TextAnchor.MiddleLeft,
             new Color(0.55f, 0.52f, 0.48f, 0.8f));
         placeholder.name = "Placeholder";
         placeholder.fontStyle = FontStyle.Italic;
@@ -2702,9 +2868,7 @@ internal static class ClanPanelController
         input.textComponent = text;
         input.placeholder = placeholder;
         input.characterLimit = characterLimit;
-        input.lineType = multiline
-            ? InputField.LineType.MultiLineNewline
-            : InputField.LineType.SingleLine;
+        input.lineType = InputField.LineType.SingleLine;
         input.text = value ?? "";
         input.caretColor = Color.white;
         input.selectionColor = new Color(0.28f, 0.62f, 0.56f, 0.55f);
@@ -2968,28 +3132,6 @@ internal static class ClanPanelController
         }
     }
 
-    private static Font GetFont(bool bold)
-    {
-        try
-        {
-            return bold ? GUIManager.Instance.AveriaSerifBold : GUIManager.Instance.AveriaSerif;
-        }
-        catch (Exception)
-        {
-            return Resources.GetBuiltinResource<Font>("Arial.ttf");
-        }
-    }
-
-    private static string CleanSingleLine(string value)
-    {
-        return (value ?? "")
-            .Replace('\r', ' ')
-            .Replace('\n', ' ')
-            .Replace('<', ' ')
-            .Replace('>', ' ')
-            .Trim();
-    }
-
     private static void PositionPanel()
     {
         if (_rootRect == null || _overlayRoot == null)
@@ -3003,18 +3145,18 @@ internal static class ClanPanelController
             safeArea = new Rect(0f, 0f, Screen.width, Screen.height);
         }
 
-        Camera? camera = GetCanvasCamera(_overlayRoot);
-        Rect overlayBounds = GetScreenBounds(_overlayRoot, camera);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(_overlayRoot);
+        Rect overlayBounds = ClanUiFactory.GetScreenBounds(_overlayRoot, camera);
         if (_positionValid &&
-            RectApproximately(_positionSafeArea, safeArea) &&
-            RectApproximately(_positionOverlayBounds, overlayBounds))
+            ClanUiFactory.RectApproximately(_positionSafeArea, safeArea) &&
+            ClanUiFactory.RectApproximately(_positionOverlayBounds, overlayBounds))
         {
             ClampCurrentPanelToSafeArea(safeArea, camera);
             return;
         }
 
         Vector2 preferredCenter = _positionValid
-            ? GetScreenBounds(_rootRect, camera).center
+            ? ClanUiFactory.GetScreenBounds(_rootRect, camera).center
             : safeArea.center;
         _positionValid = true;
         _positionSafeArea = safeArea;
@@ -3022,7 +3164,7 @@ internal static class ClanPanelController
 
         _rootRect.localScale = Vector3.one;
         Canvas.ForceUpdateCanvases();
-        Rect unscaledBounds = GetScreenBounds(_rootRect, camera);
+        Rect unscaledBounds = ClanUiFactory.GetScreenBounds(_rootRect, camera);
         float unscaledWidth = Mathf.Max(1f, unscaledBounds.width);
         float unscaledHeight = Mathf.Max(1f, unscaledBounds.height);
         float availableWidth = Mathf.Max(1f, safeArea.width - SafeAreaGap * 2f);
@@ -3064,7 +3206,7 @@ internal static class ClanPanelController
             return;
         }
 
-        Rect bounds = GetScreenBounds(_rootRect, camera);
+        Rect bounds = ClanUiFactory.GetScreenBounds(_rootRect, camera);
         float halfWidth = bounds.width * 0.5f;
         float halfHeight = bounds.height * 0.5f;
         Vector2 center = new(
@@ -3091,39 +3233,4 @@ internal static class ClanPanelController
         }
     }
 
-    private static Rect GetScreenBounds(RectTransform rect, Camera? camera)
-    {
-        rect.GetWorldCorners(WorldCorners);
-        Vector2 first = RectTransformUtility.WorldToScreenPoint(camera, WorldCorners[0]);
-        float left = first.x;
-        float right = first.x;
-        float bottom = first.y;
-        float top = first.y;
-        for (int index = 1; index < WorldCorners.Length; index++)
-        {
-            Vector2 point = RectTransformUtility.WorldToScreenPoint(camera, WorldCorners[index]);
-            left = Mathf.Min(left, point.x);
-            right = Mathf.Max(right, point.x);
-            bottom = Mathf.Min(bottom, point.y);
-            top = Mathf.Max(top, point.y);
-        }
-        return Rect.MinMaxRect(left, bottom, right, top);
-    }
-
-    private static bool RectApproximately(Rect left, Rect right)
-    {
-        const float tolerance = 0.25f;
-        return Mathf.Abs(left.xMin - right.xMin) <= tolerance &&
-               Mathf.Abs(left.yMin - right.yMin) <= tolerance &&
-               Mathf.Abs(left.xMax - right.xMax) <= tolerance &&
-               Mathf.Abs(left.yMax - right.yMax) <= tolerance;
-    }
-
-    private static Camera? GetCanvasCamera(Component component)
-    {
-        Canvas? canvas = component.GetComponentInParent<Canvas>();
-        return canvas == null || canvas.renderMode == RenderMode.ScreenSpaceOverlay
-            ? null
-            : canvas.worldCamera;
-    }
 }

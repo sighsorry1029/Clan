@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using BepInEx.Configuration;
 using HarmonyLib;
 using Splatform;
+using TMPro;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
@@ -14,6 +16,8 @@ internal static class ClanMap
     private const float PositionSendInterval = 2f;
     private const float PositionMoveThreshold = 1f;
     private const float PositionHeartbeatInterval = 10f;
+    private const string ClanPingHintName = "ClanPing";
+    private const string PingHintName = "PingPanel";
 
     private static ConditionalWeakTable<Chat.WorldTextInstance, object> ClanPingTexts = new();
     private static readonly Dictionary<string, Vector3> ForcedPositions =
@@ -33,6 +37,9 @@ internal static class ClanMap
 
     private static Sprite? _clanPlayerIcon;
     private static Sprite? _clanPingIcon;
+    private static Minimap? _clanPingHintOwner;
+    private static GameObject? _clanPingHint;
+    private static TMP_Text? _clanPingHintLabel;
     private static float _nextPositionSendTime;
     private static Vector3 _lastSentPosition = Vector3.positiveInfinity;
     private static float _lastPositionSentTime = float.NegativeInfinity;
@@ -95,11 +102,12 @@ internal static class ClanMap
 
     public static void ResetSession()
     {
-        ClearForcedPositions();
+        ForcedPositions.Clear();
         ClanPlayerIds.Clear();
         RestoreClanIcons();
-        DestroyClanPlayerIcon();
-        DestroyClanPingIcon();
+        DestroyClanPingHint();
+        DestroyGeneratedSprite(ref _clanPlayerIcon);
+        DestroyGeneratedSprite(ref _clanPingIcon);
         ClanPingTexts = new ConditionalWeakTable<Chat.WorldTextInstance, object>();
         _effectiveClanId = "";
         _positionSharingActive = false;
@@ -120,7 +128,7 @@ internal static class ClanMap
         bool clanChanged = !string.Equals(_effectiveClanId, snapshot.ClanId, StringComparison.Ordinal);
         if (!ClanPlugin.ShareClanPositions.Value.IsOn() || !snapshot.HasClan || clanChanged)
         {
-            ClearForcedPositions();
+            ForcedPositions.Clear();
             if (clanChanged)
             {
                 RestoreClanPlayerIcons();
@@ -155,13 +163,15 @@ internal static class ClanMap
 
     public static void Tick()
     {
+        UpdateClanPingHint();
+
         if (!ClanPlugin.ShareClanPositions.Value.IsOn() ||
             !ClanRpc.CurrentSnapshot.HasClan ||
             Player.m_localPlayer == null)
         {
             if (ForcedPositions.Count != 0)
             {
-                ClearForcedPositions();
+                ForcedPositions.Clear();
             }
             if (_positionSharingActive)
             {
@@ -199,6 +209,134 @@ internal static class ClanMap
         });
     }
 
+    private static void UpdateClanPingHint()
+    {
+        Minimap? minimap = Minimap.instance;
+        if (minimap == null || minimap.m_largeRoot == null)
+        {
+            return;
+        }
+
+        KeyboardShortcut shortcut = ClanPlugin.ClanPingModifierKey.Value;
+        KeyCode modifierKey = shortcut.MainKey;
+        bool visible = ClanRpc.CurrentSnapshot.HasClan &&
+                       modifierKey != KeyCode.None &&
+                       PlatformPrefs.GetInt("KeyHints", 1) == 1 &&
+                       minimap.m_largeRoot.activeInHierarchy;
+        if (!visible)
+        {
+            if (_clanPingHint != null && _clanPingHint.activeSelf)
+            {
+                _clanPingHint.SetActive(false);
+                MarkClanPingHintLayoutForRebuild();
+            }
+            return;
+        }
+
+        if (_clanPingHintOwner != minimap || _clanPingHint == null)
+        {
+            BuildClanPingHint(minimap);
+        }
+
+        if (_clanPingHint == null)
+        {
+            return;
+        }
+
+        if (!_clanPingHint.activeSelf)
+        {
+            _clanPingHint.SetActive(true);
+            MarkClanPingHintLayoutForRebuild();
+        }
+
+        if (_clanPingHintLabel == null)
+        {
+            return;
+        }
+
+        string text = ClanLocalization.Format(
+            "clan_map_ping_hint",
+            FormatHintShortcut(shortcut));
+        if (!string.Equals(_clanPingHintLabel.text, text, StringComparison.Ordinal))
+        {
+            _clanPingHintLabel.text = text;
+            MarkClanPingHintLayoutForRebuild();
+        }
+    }
+
+    private static void BuildClanPingHint(Minimap minimap)
+    {
+        DestroyClanPingHint();
+
+        Transform? keyboardHints =
+            minimap.m_largeRoot.transform.Find("KeyHints/keyboard_hints");
+        Transform? pingHint = keyboardHints?.Find(PingHintName);
+        if (keyboardHints == null || pingHint == null)
+        {
+            return;
+        }
+
+        Transform? existing = keyboardHints.Find(ClanPingHintName);
+        GameObject hint = existing != null
+            ? existing.gameObject
+            : UnityEngine.Object.Instantiate(pingHint.gameObject, keyboardHints, false);
+        hint.name = ClanPingHintName;
+        hint.transform.SetSiblingIndex(pingHint.GetSiblingIndex());
+        hint.SetActive(true);
+        HorizontalLayoutGroup? hintLayout = hint.GetComponent<HorizontalLayoutGroup>();
+        if (hintLayout != null)
+        {
+            hintLayout.spacing = -4f;
+        }
+
+        TMP_Text? label = hint.transform.Find("Label")?.GetComponent<TMP_Text>() ??
+                          hint.GetComponentInChildren<TMP_Text>(includeInactive: true);
+        if (label == null)
+        {
+            if (existing == null)
+            {
+                UnityEngine.Object.Destroy(hint);
+            }
+            return;
+        }
+
+        _clanPingHintOwner = minimap;
+        _clanPingHint = hint;
+        _clanPingHintLabel = label;
+        MarkClanPingHintLayoutForRebuild();
+    }
+
+    private static void MarkClanPingHintLayoutForRebuild()
+    {
+        if (_clanPingHint?.transform.parent is not RectTransform parent)
+        {
+            return;
+        }
+        LayoutRebuilder.MarkLayoutForRebuild(parent);
+    }
+
+    private static string FormatHintShortcut(KeyboardShortcut shortcut)
+    {
+        return shortcut.ToString()
+            .Replace("LeftShift", "Shift")
+            .Replace("RightShift", "Shift")
+            .Replace("LeftControl", "Ctrl")
+            .Replace("RightControl", "Ctrl")
+            .Replace("LeftAlt", "Alt")
+            .Replace("RightAlt", "Alt");
+    }
+
+    private static void DestroyClanPingHint()
+    {
+        if (_clanPingHint != null)
+        {
+            UnityEngine.Object.Destroy(_clanPingHint);
+        }
+        _clanPingHintOwner = null;
+        _clanPingHint = null;
+        _clanPingHintLabel = null;
+    }
+
     public static void OnMapPing(ClanPlayerRef sender, Vector3 position)
     {
         Chat? chat = Chat.instance;
@@ -213,7 +351,9 @@ internal static class ClanMap
         long senderId = FindTalkerId(sender);
         UserInfo userInfo = new()
         {
-            Name = string.IsNullOrWhiteSpace(sender.Name) ? "Clan" : sender.Name,
+            Name = string.IsNullOrWhiteSpace(sender.Name)
+                ? ClanLocalization.Text("clan_name_fallback")
+                : sender.Name,
             UserId = new PlatformUserID(sender.PlatformId)
         };
 
@@ -275,11 +415,6 @@ internal static class ClanMap
         return true;
     }
 
-    private static void ClearForcedPositions()
-    {
-        ForcedPositions.Clear();
-    }
-
     private static void ResetPositionTimer()
     {
         _nextPositionSendTime = 0f;
@@ -330,12 +465,7 @@ internal static class ClanMap
                 continue;
             }
 
-            pin.m_icon = defaultIcon;
-            pin.m_doubleSize = false;
-            if (pin.m_iconElement != null)
-            {
-                pin.m_iconElement.sprite = pin.m_icon;
-            }
+            SetPinAppearance(pin, defaultIcon, doubleSize: false);
         }
     }
 
@@ -366,12 +496,20 @@ internal static class ClanMap
                 continue;
             }
 
-            pin.m_icon = defaultIcon;
-            pin.m_doubleSize = false;
-            if (pin.m_iconElement != null)
-            {
-                pin.m_iconElement.sprite = pin.m_icon;
-            }
+            SetPinAppearance(pin, defaultIcon, doubleSize: false);
+        }
+    }
+
+    private static void SetPinAppearance(
+        Minimap.PinData pin,
+        Sprite? icon,
+        bool doubleSize)
+    {
+        pin.m_icon = icon;
+        pin.m_doubleSize = doubleSize;
+        if (pin.m_iconElement != null)
+        {
+            pin.m_iconElement.sprite = icon;
         }
     }
 
@@ -393,36 +531,20 @@ internal static class ClanMap
         return null;
     }
 
-    private static void DestroyClanPlayerIcon()
+    private static void DestroyGeneratedSprite(ref Sprite? sprite)
     {
-        if (_clanPlayerIcon == null)
+        if (sprite == null)
         {
             return;
         }
 
-        Texture2D texture = _clanPlayerIcon.texture;
-        UnityEngine.Object.Destroy(_clanPlayerIcon);
+        Texture2D texture = sprite.texture;
+        UnityEngine.Object.Destroy(sprite);
         if (texture != null)
         {
             UnityEngine.Object.Destroy(texture);
         }
-        _clanPlayerIcon = null;
-    }
-
-    private static void DestroyClanPingIcon()
-    {
-        if (_clanPingIcon == null)
-        {
-            return;
-        }
-
-        Texture2D texture = _clanPingIcon.texture;
-        UnityEngine.Object.Destroy(_clanPingIcon);
-        if (texture != null)
-        {
-            UnityEngine.Object.Destroy(texture);
-        }
-        _clanPingIcon = null;
+        sprite = null;
     }
 
     private static long FindTalkerId(ClanPlayerRef player)
@@ -583,12 +705,7 @@ internal static class ClanMap
                 Minimap.PinData pin = pingPins[i];
                 if (tempShouts[i] == worldText)
                 {
-                    pin.m_icon = defaultIcon;
-                    pin.m_doubleSize = false;
-                    if (pin.m_iconElement != null)
-                    {
-                        pin.m_iconElement.sprite = pin.m_icon;
-                    }
+                    SetPinAppearance(pin, defaultIcon, doubleSize: false);
                 }
             }
         }
@@ -630,23 +747,13 @@ internal static class ClanMap
                     continue;
                 }
 
-                bool changed = false;
                 if (IsClanPlayer(player))
                 {
-                    pin.m_icon = _clanPlayerIcon;
-                    pin.m_doubleSize = true;
-                    changed = true;
+                    SetPinAppearance(pin, _clanPlayerIcon, doubleSize: true);
                 }
                 else if (pin.m_icon == _clanPlayerIcon)
                 {
-                    pin.m_icon = defaultIcon;
-                    pin.m_doubleSize = false;
-                    changed = true;
-                }
-
-                if (changed && pin.m_iconElement != null)
-                {
-                    pin.m_iconElement.sprite = pin.m_icon;
+                    SetPinAppearance(pin, defaultIcon, doubleSize: false);
                 }
             }
         }
@@ -747,12 +854,7 @@ internal static class ClanMap
                     continue;
                 }
 
-                pin.m_icon = _clanPingIcon;
-                pin.m_doubleSize = true;
-                if (pin.m_iconElement != null)
-                {
-                    pin.m_iconElement.sprite = pin.m_icon;
-                }
+                SetPinAppearance(pin, _clanPingIcon, doubleSize: true);
             }
         }
     }

@@ -829,16 +829,19 @@ internal static class ClanGifDecoder
                 throw new InvalidDataException(
                     "GIF LZW stream has multiple terminators.");
             }
-            if (_remainingInBlock != 0)
+
+            // Some otherwise valid GIF encoders pad the image-data sub-block
+            // after the LZW end code. The decoded pixel count and the end code
+            // have already been validated, so discard only the remainder of
+            // this bounded image-data stream. Structural parsing resumes after
+            // its required zero-length terminator.
+            while (_remainingInBlock > 0)
             {
-                throw new InvalidDataException(
-                    "GIF LZW stream has bytes after its end code.");
+                _reader.ReadByte("LZW padding after end code");
+                _remainingInBlock--;
             }
-            if (_reader.ReadByte("LZW sub-block terminator") != 0)
-            {
-                throw new InvalidDataException(
-                    "GIF LZW stream has data after its end code.");
-            }
+
+            _reader.SkipSubBlocks("LZW padding after end code");
 
             _finished = true;
         }

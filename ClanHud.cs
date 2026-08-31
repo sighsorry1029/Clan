@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using HarmonyLib;
 using Jotunn.Managers;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -34,7 +33,7 @@ internal static class ClanHud
     private const float HeaderDragThresholdPixels = 5f;
 
     private static readonly Vector2 DefaultNormalizedPosition =
-        new(0.02f, 0.28f);
+        new(0.015f, 0.32f);
     private static readonly Color HeaderToggleColor =
         new(1f, 0.52f, 0.16f, 0.72f);
     private static readonly Color HeaderToggleHoverColor =
@@ -53,7 +52,6 @@ internal static class ClanHud
         new(1f, 0.333f, 0.333f, 1f);
     private static readonly Color RowTextColor =
         new(0.96f, 0.93f, 0.84f, 1f);
-    private static readonly Vector3[] WorldCorners = new Vector3[4];
     private static readonly List<RaycastResult> UiRaycastResults = new();
 
     private static GameObject? _root;
@@ -70,11 +68,7 @@ internal static class ClanHud
     private static int _lastScreenHeight;
     private static Rect _lastSafeArea;
     private static Vector2 _lastHudScale;
-    private static bool _isDragging;
     private static bool _isWritingPosition;
-    private static bool _positionSettingSubscribed;
-    private static bool _collapseSettingSubscribed;
-    private static bool _showSettingSubscribed;
     private static HudPointerMode _pointerMode;
     private static bool _restoreChatFocusAfterPointer;
     private static Vector2 _headerPressPosition;
@@ -85,14 +79,6 @@ internal static class ClanHud
     private static Vector2 _lastHudParentSize;
     private static EventSystem? _uiRaycastEventSystem;
     private static PointerEventData? _uiRaycastPointerData;
-    private static int _lastVisibilityDiagnosticMask = int.MinValue;
-    private static int _lastVisibilityDiagnosticParentId;
-    private static int _lastVisibilityDiagnosticRootParentId;
-    private static int _lastVisibilityDiagnosticHudPlayers = -1;
-    private static int _lastVisibilityDiagnosticVisibleRows = -1;
-    private static int _lastRebuildDiagnosticMask = int.MinValue;
-    private static int _lastRebuildDiagnosticParentId;
-    private static int _lastRebuildDiagnosticRootId;
 
     private enum HudPointerMode
     {
@@ -125,12 +111,10 @@ internal static class ClanHud
         ClanRpc.SnapshotChanged += OnSnapshotChanged;
         ClanRpc.HudSnapshotChanged += OnHudSnapshotChanged;
         ClanPlugin.ClanHudPosition.SettingChanged += OnHudPositionChanged;
-        _positionSettingSubscribed = true;
         ClanPlugin.ClanHudPlayerListCollapsed.SettingChanged +=
             OnPlayerListCollapsedChanged;
-        _collapseSettingSubscribed = true;
         ClanPlugin.ShowClanHud.SettingChanged += OnShowHudChanged;
-        _showSettingSubscribed = true;
+        ClanLocalization.LanguageChanged += OnLanguageChanged;
         Rebuild();
     }
 
@@ -139,23 +123,11 @@ internal static class ClanHud
         GUIManager.OnCustomGUIAvailable -= Rebuild;
         ClanRpc.SnapshotChanged -= OnSnapshotChanged;
         ClanRpc.HudSnapshotChanged -= OnHudSnapshotChanged;
-        if (_positionSettingSubscribed)
-        {
-            ClanPlugin.ClanHudPosition.SettingChanged -= OnHudPositionChanged;
-            _positionSettingSubscribed = false;
-        }
-        if (_collapseSettingSubscribed)
-        {
-            ClanPlugin.ClanHudPlayerListCollapsed.SettingChanged -=
-                OnPlayerListCollapsedChanged;
-            _collapseSettingSubscribed = false;
-        }
-        if (_showSettingSubscribed)
-        {
-            ClanPlugin.ShowClanHud.SettingChanged -= OnShowHudChanged;
-            _showSettingSubscribed = false;
-        }
-        _isDragging = false;
+        ClanPlugin.ClanHudPosition.SettingChanged -= OnHudPositionChanged;
+        ClanPlugin.ClanHudPlayerListCollapsed.SettingChanged -=
+            OnPlayerListCollapsedChanged;
+        ClanPlugin.ShowClanHud.SettingChanged -= OnShowHudChanged;
+        ClanLocalization.LanguageChanged -= OnLanguageChanged;
         _pointerMode = HudPointerMode.None;
         _restoreChatFocusAfterPointer = false;
         _dragCamera = null;
@@ -184,14 +156,6 @@ internal static class ClanHud
         _lastHudParentSize = Vector2.zero;
         _uiRaycastEventSystem = null;
         _uiRaycastPointerData = null;
-        _lastVisibilityDiagnosticMask = int.MinValue;
-        _lastVisibilityDiagnosticParentId = 0;
-        _lastVisibilityDiagnosticRootParentId = 0;
-        _lastVisibilityDiagnosticHudPlayers = -1;
-        _lastVisibilityDiagnosticVisibleRows = -1;
-        _lastRebuildDiagnosticMask = int.MinValue;
-        _lastRebuildDiagnosticParentId = 0;
-        _lastRebuildDiagnosticRootId = 0;
         UiRaycastResults.Clear();
     }
 
@@ -200,11 +164,6 @@ internal static class ClanHud
         Transform? hudParent = GetHudParent();
         if (hudParent == null)
         {
-            LogVisibilityStateIfChanged(
-                "tick-no-parent",
-                ClanRpc.CurrentSnapshot,
-                hudParent,
-                shouldShow: false);
             CancelPointerInteraction(saveDrag: false, restoreChatFocus: false);
             if (_root != null)
             {
@@ -235,7 +194,7 @@ internal static class ClanHud
             }
         }
 
-        if (ScreenEnvironmentChanged() && !_isDragging)
+        if (ScreenEnvironmentChanged() && _pointerMode != HudPointerMode.Drag)
         {
             ApplyConfiguredPosition();
         }
@@ -291,7 +250,6 @@ internal static class ClanHud
         ClanClientSnapshot snapshot = ClanRpc.CurrentSnapshot;
         Transform? hudParent = GetHudParent();
         bool visible = ShouldShow(snapshot, hudParent);
-        LogVisibilityStateIfChanged("reconcile", snapshot, hudParent, visible);
         if (_root == null)
         {
             return visible;
@@ -315,104 +273,9 @@ internal static class ClanHud
         return visible;
     }
 
-    private static void LogVisibilityStateIfChanged(
-        string source,
-        ClanClientSnapshot snapshot,
-        Transform? hudParent,
-        bool shouldShow)
-    {
-        bool hasNetwork = ZNet.instance != null;
-        bool hasPlayer = Player.m_localPlayer != null;
-        bool hasParent = hudParent != null;
-        bool parentActiveSelf = hasParent && hudParent!.gameObject.activeSelf;
-        bool parentActiveInHierarchy = hasParent && hudParent!.gameObject.activeInHierarchy;
-        bool configEnabled = ClanPlugin.ShowClanHud.Value.IsOn();
-        bool hasRoot = _root != null;
-        bool rootActiveSelf = hasRoot && _root!.activeSelf;
-        bool rootActiveInHierarchy = hasRoot && _root!.activeInHierarchy;
-        bool hudSnapshotMatches = snapshot.HasClan &&
-                                  StringComparer.Ordinal.Equals(
-                                      ClanRpc.CurrentHudSnapshot.ClanId,
-                                      snapshot.ClanId);
-        bool collapsed = IsPlayerListCollapsed();
-        bool rootParentMatches = hasRoot &&
-                                 hudParent != null &&
-                                 _root!.transform.parent == hudParent;
-        int mask =
-            (hasNetwork ? 1 << 0 : 0) |
-            (hasPlayer ? 1 << 1 : 0) |
-            (hasParent ? 1 << 2 : 0) |
-            (parentActiveSelf ? 1 << 3 : 0) |
-            (parentActiveInHierarchy ? 1 << 4 : 0) |
-            (configEnabled ? 1 << 5 : 0) |
-            (snapshot.HasClan ? 1 << 6 : 0) |
-            (hasRoot ? 1 << 7 : 0) |
-            (rootActiveSelf ? 1 << 8 : 0) |
-            (rootActiveInHierarchy ? 1 << 9 : 0) |
-            (shouldShow ? 1 << 10 : 0) |
-            (hudSnapshotMatches ? 1 << 11 : 0) |
-            (collapsed ? 1 << 12 : 0) |
-            (rootParentMatches ? 1 << 13 : 0);
-        int parentId = hudParent != null ? hudParent.GetInstanceID() : 0;
-        int rootParentId = _root != null && _root.transform.parent != null
-            ? _root.transform.parent.GetInstanceID()
-            : 0;
-        int hudPlayers = ClanRpc.CurrentHudSnapshot.Players.Count;
-        int visibleRows = CountVisibleRows();
-        if (mask == _lastVisibilityDiagnosticMask &&
-            parentId == _lastVisibilityDiagnosticParentId &&
-            rootParentId == _lastVisibilityDiagnosticRootParentId &&
-            hudPlayers == _lastVisibilityDiagnosticHudPlayers &&
-            visibleRows == _lastVisibilityDiagnosticVisibleRows)
-        {
-            return;
-        }
-
-        _lastVisibilityDiagnosticMask = mask;
-        _lastVisibilityDiagnosticParentId = parentId;
-        _lastVisibilityDiagnosticRootParentId = rootParentId;
-        _lastVisibilityDiagnosticHudPlayers = hudPlayers;
-        _lastVisibilityDiagnosticVisibleRows = visibleRows;
-        Vector2 rootPosition = _rootRect != null
-            ? _rootRect.anchoredPosition
-            : Vector2.zero;
-        Vector2 rootSize = _rootRect != null
-            ? _rootRect.rect.size
-            : Vector2.zero;
-        Vector2 parentSize = hudParent is RectTransform parentRect
-            ? parentRect.rect.size
-            : Vector2.zero;
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] HUD state source={source}; frame={Time.frameCount}; " +
-            $"shouldShow={shouldShow}; network={hasNetwork}; player={hasPlayer}; " +
-            $"parent={hasParent}; parentActiveSelf={parentActiveSelf}; " +
-            $"parentActiveHierarchy={parentActiveInHierarchy}; config={configEnabled}; " +
-            $"hasClan={snapshot.HasClan}; root={hasRoot}; " +
-            $"rootActiveSelf={rootActiveSelf}; rootActiveHierarchy={rootActiveInHierarchy}; " +
-            $"rootParentMatches={rootParentMatches}; hudSnapshotMatches={hudSnapshotMatches}; " +
-            $"hudPlayers={hudPlayers}; visibleRows={visibleRows}; collapsed={collapsed}; " +
-            $"parentId={parentId}; rootParentId={rootParentId}; " +
-            $"rootPos=({rootPosition.x:F1},{rootPosition.y:F1}); " +
-            $"rootSize=({rootSize.x:F1},{rootSize.y:F1}); " +
-            $"parentSize=({parentSize.x:F1},{parentSize.y:F1}).");
-    }
-
-    private static int CountVisibleRows()
-    {
-        int count = 0;
-        foreach (HudRowView row in _rows)
-        {
-            if (row.Root != null && row.Root.activeSelf)
-            {
-                count++;
-            }
-        }
-        return count;
-    }
-
     internal static bool CapturesChatPointer(Vector2 pointerPosition)
     {
-        if (_pointerMode != HudPointerMode.None || _isDragging)
+        if (_pointerMode != HudPointerMode.None)
         {
             return true;
         }
@@ -424,7 +287,7 @@ internal static class ClanHud
             RectTransformUtility.RectangleContainsScreenPoint(
                 _headerRect,
                 pointerPosition,
-                GetCanvasCamera(_headerRect));
+                ClanUiFactory.GetCanvasCamera(_headerRect));
         if (!pointerInsideHeader)
         {
             return false;
@@ -455,7 +318,9 @@ internal static class ClanHud
 
         if (_headerClanName != null)
         {
-            _headerClanName.text = $"Clan {CleanSingleLine(snapshot.ClanName)}";
+            _headerClanName.text = ClanLocalization.Format(
+                "clan_hud_header",
+                ClanUiFactory.CleanSingleLine(snapshot.ClanName));
         }
 
         if (IsPlayerListCollapsed())
@@ -499,6 +364,11 @@ internal static class ClanHud
         LayoutVisibleRows(rowIndex);
     }
 
+    private static void OnLanguageChanged()
+    {
+        Refresh();
+    }
+
     private static void HideRows()
     {
         foreach (HudRowView row in _rows)
@@ -536,8 +406,10 @@ internal static class ClanHud
             !StringComparer.Ordinal.Equals(row.PlayerId, player.PlayerId);
         row.Root.SetActive(true);
         row.PlayerId = player.PlayerId;
-        row.Label.text =
-            $"{rosterPlayer.Role} {CleanSingleLine(rosterPlayer.Name)}";
+        row.Label.text = ClanLocalization.Format(
+            "clan_hud_player",
+            ClanLocalization.Role(rosterPlayer.Role),
+            ClanUiFactory.CleanSingleLine(rosterPlayer.Name));
 
         bool hasHealth =
             player.HasHealth &&
@@ -651,39 +523,6 @@ internal static class ClanHud
         return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 
-    private static void LogRebuildAttemptIfChanged(Transform hudParent)
-    {
-        bool parentActiveSelf = hudParent.gameObject.activeSelf;
-        bool parentActiveInHierarchy = hudParent.gameObject.activeInHierarchy;
-        bool hasRoot = _root != null;
-        bool hasClan = ClanRpc.CurrentSnapshot.HasClan;
-        bool configEnabled = ClanPlugin.ShowClanHud.Value.IsOn();
-        int mask =
-            (parentActiveSelf ? 1 << 0 : 0) |
-            (parentActiveInHierarchy ? 1 << 1 : 0) |
-            (hasRoot ? 1 << 2 : 0) |
-            (hasClan ? 1 << 3 : 0) |
-            (configEnabled ? 1 << 4 : 0);
-        int parentId = hudParent.GetInstanceID();
-        int rootId = hasRoot ? _root!.GetInstanceID() : 0;
-        if (mask == _lastRebuildDiagnosticMask &&
-            parentId == _lastRebuildDiagnosticParentId &&
-            rootId == _lastRebuildDiagnosticRootId)
-        {
-            return;
-        }
-
-        _lastRebuildDiagnosticMask = mask;
-        _lastRebuildDiagnosticParentId = parentId;
-        _lastRebuildDiagnosticRootId = rootId;
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] HUD rebuild frame={Time.frameCount}; " +
-            $"parentId={parentId}; parentActiveSelf={parentActiveSelf}; " +
-            $"parentActiveHierarchy={parentActiveInHierarchy}; " +
-            $"previousRootId={rootId}; hasClan={hasClan}; " +
-            $"config={configEnabled}.");
-    }
-
     private static void Rebuild()
     {
         Rebuild(GetHudParent());
@@ -696,8 +535,6 @@ internal static class ClanHud
         {
             return;
         }
-
-        LogRebuildAttemptIfChanged(hudParent);
 
         CancelPointerInteraction(saveDrag: false, restoreChatFocus: false);
         if (_root != null)
@@ -758,11 +595,6 @@ internal static class ClanHud
         _trackedHudParent = hudParent;
         _lastHudParentActive = false;
         _lastHudParentSize = Vector2.zero;
-        _lastVisibilityDiagnosticMask = int.MinValue;
-        _lastVisibilityDiagnosticParentId = 0;
-        _lastVisibilityDiagnosticRootParentId = 0;
-        _lastVisibilityDiagnosticHudPlayers = -1;
-        _lastVisibilityDiagnosticVisibleRows = -1;
         Refresh();
         ApplyConfiguredPosition();
     }
@@ -780,7 +612,7 @@ internal static class ClanHud
 
         _headerClanName = CreateText(
             header.transform,
-            "Clan",
+            ClanLocalization.Text("clan_hud_title"),
             24,
             TextAnchor.MiddleLeft,
             HeaderNameColor,
@@ -1041,7 +873,7 @@ internal static class ClanHud
                 BarHeight);
         }
 
-        if (sizeChanged && !_isDragging)
+        if (sizeChanged && _pointerMode != HudPointerMode.Drag)
         {
             ApplyConfiguredPosition();
         }
@@ -1109,7 +941,7 @@ internal static class ClanHud
     {
         _ = sender;
         _ = args;
-        if (!_isDragging && !_isWritingPosition)
+        if (_pointerMode != HudPointerMode.Drag && !_isWritingPosition)
         {
             ApplyConfiguredPosition();
         }
@@ -1189,7 +1021,7 @@ internal static class ClanHud
         bool changed =
             _lastScreenWidth != Screen.width ||
             _lastScreenHeight != Screen.height ||
-            !RectApproximately(_lastSafeArea, safeArea) ||
+            !ClanUiFactory.RectApproximately(_lastSafeArea, safeArea) ||
             (_lastHudScale - hudScale).sqrMagnitude > 0.000001f;
         _lastScreenWidth = Screen.width;
         _lastScreenHeight = Screen.height;
@@ -1209,7 +1041,7 @@ internal static class ClanHud
         Vector2 normalized = SanitizeNormalizedPosition(
             ClanPlugin.ClanHudPosition.Value);
         Canvas.ForceUpdateCanvases();
-        Camera? camera = GetCanvasCamera(_rootRect);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(_rootRect);
         Rect safeArea = GetSafeArea();
         Vector2 targetTopLeft = new(
             safeArea.xMin + normalized.x * safeArea.width,
@@ -1244,8 +1076,7 @@ internal static class ClanHud
     {
         bool capturePointer =
             HasReleasedCursor() ||
-            _pointerMode != HudPointerMode.None ||
-            _isDragging;
+            _pointerMode != HudPointerMode.None;
         if (_headerDragSurface != null)
         {
             _headerDragSurface.raycastTarget = capturePointer;
@@ -1264,7 +1095,7 @@ internal static class ClanHud
         }
 
         Vector2 pointerPosition = Input.mousePosition;
-        Camera? canvasCamera = GetCanvasCamera(_headerRect);
+        Camera? canvasCamera = ClanUiFactory.GetCanvasCamera(_headerRect);
         bool pointerOverHeader =
             RectTransformUtility.RectangleContainsScreenPoint(
                 _headerRect,
@@ -1276,7 +1107,7 @@ internal static class ClanHud
             RectTransformUtility.RectangleContainsScreenPoint(
                 _collapseButtonRect,
                 pointerPosition,
-                GetCanvasCamera(_collapseButtonRect));
+                ClanUiFactory.GetCanvasCamera(_collapseButtonRect));
         bool inventoryOpen = InventoryGui.IsVisible();
         bool pointerAvailable =
             HasReleasedCursor() &&
@@ -1288,7 +1119,7 @@ internal static class ClanHud
             RectTransformUtility.RectangleContainsScreenPoint(
                 _headerClanName.rectTransform,
                 pointerPosition,
-                GetCanvasCamera(_headerClanName.rectTransform));
+                ClanUiFactory.GetCanvasCamera(_headerClanName.rectTransform));
 
         if (_headerClanName != null)
         {
@@ -1375,7 +1206,7 @@ internal static class ClanHud
     {
         bool shouldRestoreChatFocus =
             restoreChatFocus && _restoreChatFocusAfterPointer;
-        if (_isDragging)
+        if (_pointerMode == HudPointerMode.Drag)
         {
             EndDrag(saveDrag);
         }
@@ -1422,16 +1253,12 @@ internal static class ClanHud
         Component? panel,
         Vector2 pointerPosition)
     {
-        if (panel == null || !panel.gameObject.activeInHierarchy ||
-            panel.transform is not RectTransform rect)
+        if (panel == null)
         {
             return false;
         }
 
-        return RectTransformUtility.RectangleContainsScreenPoint(
-            rect,
-            pointerPosition,
-            GetCanvasCamera(rect));
+        return ContainsPointerInActivePanel(panel.gameObject, pointerPosition);
     }
 
     private static bool ContainsPointerInActivePanel(
@@ -1447,7 +1274,7 @@ internal static class ClanHud
         return RectTransformUtility.RectangleContainsScreenPoint(
             rect,
             pointerPosition,
-            GetCanvasCamera(rect));
+            ClanUiFactory.GetCanvasCamera(rect));
     }
 
     private static bool IsHudTopmostAtPointer(Vector2 pointerPosition)
@@ -1505,18 +1332,17 @@ internal static class ClanHud
             return false;
         }
 
-        _dragCamera = eventCamera ?? GetCanvasCamera(_rootRect);
+        _dragCamera = eventCamera ?? ClanUiFactory.GetCanvasCamera(_rootRect);
         Vector2 rootScreenPosition = RectTransformUtility.WorldToScreenPoint(
             _dragCamera,
             _rootRect.position);
         _dragPointerOffset = pointerPosition - rootScreenPosition;
-        _isDragging = true;
         return true;
     }
 
     private static void Drag(Vector2 pointerPosition)
     {
-        if (!_isDragging ||
+        if (_pointerMode != HudPointerMode.Drag ||
             _rootRect == null ||
             _rootRect.parent is not RectTransform parentRect)
         {
@@ -1530,7 +1356,7 @@ internal static class ClanHud
 
     private static void EndDrag(bool save)
     {
-        if (!_isDragging)
+        if (_pointerMode != HudPointerMode.Drag)
         {
             return;
         }
@@ -1541,7 +1367,6 @@ internal static class ClanHud
             ClampToSafeArea(parentRect, GetSafeArea(), _dragCamera);
         }
 
-        _isDragging = false;
         _dragCamera = null;
         if (save)
         {
@@ -1557,9 +1382,9 @@ internal static class ClanHud
         }
 
         Canvas.ForceUpdateCanvases();
-        Camera? camera = GetCanvasCamera(_rootRect);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(_rootRect);
         Rect safeArea = GetSafeArea();
-        Rect bounds = GetScreenBounds(_rootRect, camera);
+        Rect bounds = ClanUiFactory.GetScreenBounds(_rootRect, camera);
         Vector2 normalized = new(
             safeArea.width <= 0f
                 ? 0f
@@ -1596,7 +1421,7 @@ internal static class ClanHud
             return;
         }
 
-        Rect bounds = GetScreenBounds(_rootRect, camera);
+        Rect bounds = ClanUiFactory.GetScreenBounds(_rootRect, camera);
         float deltaX = bounds.width > safeArea.width
             ? safeArea.xMin - bounds.xMin
             : bounds.xMin < safeArea.xMin
@@ -1641,26 +1466,6 @@ internal static class ClanHud
         }
     }
 
-    private static Rect GetScreenBounds(RectTransform rect, Camera? camera)
-    {
-        rect.GetWorldCorners(WorldCorners);
-        Vector2 first = RectTransformUtility.WorldToScreenPoint(camera, WorldCorners[0]);
-        float left = first.x;
-        float right = first.x;
-        float bottom = first.y;
-        float top = first.y;
-        for (int index = 1; index < WorldCorners.Length; index++)
-        {
-            Vector2 point =
-                RectTransformUtility.WorldToScreenPoint(camera, WorldCorners[index]);
-            left = Mathf.Min(left, point.x);
-            right = Mathf.Max(right, point.x);
-            bottom = Mathf.Min(bottom, point.y);
-            top = Mathf.Max(top, point.y);
-        }
-        return Rect.MinMaxRect(left, bottom, right, top);
-    }
-
     private static Rect GetSafeArea()
     {
         Rect safeArea = Screen.safeArea;
@@ -1681,39 +1486,12 @@ internal static class ClanHud
         return safeArea;
     }
 
-    private static bool RectApproximately(Rect left, Rect right)
-    {
-        const float tolerance = 0.25f;
-        return Mathf.Abs(left.xMin - right.xMin) <= tolerance &&
-               Mathf.Abs(left.yMin - right.yMin) <= tolerance &&
-               Mathf.Abs(left.xMax - right.xMax) <= tolerance &&
-               Mathf.Abs(left.yMax - right.yMax) <= tolerance;
-    }
-
-    private static Camera? GetCanvasCamera(Component component)
-    {
-        Canvas? canvas = component.GetComponentInParent<Canvas>();
-        return canvas == null || canvas.renderMode == RenderMode.ScreenSpaceOverlay
-            ? null
-            : canvas.worldCamera;
-    }
-
     private static Transform? GetHudParent()
     {
         Hud? hud = Hud.instance;
         return hud != null && hud.m_rootObject != null
             ? hud.m_rootObject.transform
             : null;
-    }
-
-    private static string CleanSingleLine(string value)
-    {
-        return (value ?? "")
-            .Replace('\r', ' ')
-            .Replace('\n', ' ')
-            .Replace('<', ' ')
-            .Replace('>', ' ')
-            .Trim();
     }
 
     private static Text CreateText(
@@ -1745,38 +1523,6 @@ internal static class ClanHud
         outline.effectColor = new Color(0f, 0f, 0f, 0.78f);
         outline.effectDistance = new Vector2(1f, -1f);
         outline.useGraphicAlpha = true;
-    }
-
-    [HarmonyPatch(typeof(Hud), "Awake")]
-    private static class HudAwakePatch
-    {
-        [HarmonyPriority(Priority.Last)]
-        private static void Postfix(Hud __instance)
-        {
-            if (__instance == Hud.instance &&
-                __instance.m_rootObject != null)
-            {
-                Rebuild(__instance.m_rootObject.transform);
-            }
-        }
-    }
-
-    [HarmonyPatch(typeof(Hud), "Update")]
-    private static class HudUpdatePatch
-    {
-        [HarmonyPriority(Priority.Last)]
-        private static void Postfix(Hud __instance)
-        {
-            if (__instance != Hud.instance ||
-                __instance.m_rootObject == null ||
-                _root == null ||
-                _root.transform.parent != __instance.m_rootObject.transform)
-            {
-                return;
-            }
-
-            ReconcileVisibility();
-        }
     }
 
 }

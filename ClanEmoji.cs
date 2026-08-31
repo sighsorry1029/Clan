@@ -9,7 +9,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using BepInEx;
 using HarmonyLib;
 using Jotunn.Managers;
 using ServerSync;
@@ -39,6 +38,7 @@ internal static partial class ClanEmoji
     private const int EmojiSizePercent = 200;
     private const int AtlasGutter = 2;
     private const int AtlasColumns = 5;
+    private const long MediaCacheRetryDelayTicks = TimeSpan.TicksPerSecond;
     private const int MaximumManifestCharacters = 24 * 1024;
     private const string ManifestVersion = "v4";
     private const string SpriteAssetVersion = "1.1.0";
@@ -89,6 +89,10 @@ internal static partial class ClanEmoji
         new(MediaConfigSync, "manifest", "");
 
     private static bool _initialized;
+    private static bool _mediaCacheInitialized;
+    private static bool _mediaCacheWarningLogged;
+    private static long _mediaCacheRetryAtTicks;
+    private static bool _serverManifestPublishRetryPending;
     private static ZNet? _session;
     private static RuntimeLibrary? _runtime;
     private static BuildState? _build;
@@ -157,10 +161,10 @@ internal static partial class ClanEmoji
     }
 
     private static string EmojiDirectory =>
-        Path.Combine(Paths.ConfigPath, "Clan", "emoji");
+        Path.Combine(ClanPlugin.MediaDirectory, "emoji");
 
     private static string EmblemDirectory =>
-        Path.Combine(Paths.ConfigPath, "Clan", "emblems");
+        Path.Combine(ClanPlugin.MediaDirectory, "emblems");
 
     internal static void MarkEmojiServerFileDirty(string path)
     {
@@ -230,8 +234,46 @@ internal static partial class ClanEmoji
         }
 
         _initialized = true;
-        InitEmojiSync();
         SyncedManifest.ValueChanged += OnSyncedManifestChanged;
+    }
+
+    private static bool EnsureMediaCacheInitialized()
+    {
+        if (_mediaCacheInitialized)
+        {
+            return true;
+        }
+
+        long now = DateTime.UtcNow.Ticks;
+        if (now < _mediaCacheRetryAtTicks)
+        {
+            return false;
+        }
+        _mediaCacheRetryAtTicks = now + MediaCacheRetryDelayTicks;
+
+        try
+        {
+            InitializeEmojiCache();
+            _mediaCacheInitialized = true;
+            _mediaCacheRetryAtTicks = 0L;
+            if (_mediaCacheWarningLogged)
+            {
+                ClanPlugin.ClanLogger.LogInfo(
+                    "Clan media cache initialization recovered.");
+                _mediaCacheWarningLogged = false;
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (!_mediaCacheWarningLogged)
+            {
+                ClanPlugin.ClanLogger.LogWarning(
+                    $"Clan media cache is not ready and will be retried: {ex.Message}");
+                _mediaCacheWarningLogged = true;
+            }
+            return false;
+        }
     }
 
     public static void Dispose()
@@ -244,15 +286,23 @@ internal static partial class ClanEmoji
         SyncedManifest.ValueChanged -= OnSyncedManifestChanged;
         _session = null;
         _pendingManifest = null;
+        _mediaCacheInitialized = false;
+        _mediaCacheWarningLogged = false;
+        _mediaCacheRetryAtTicks = 0L;
+        ResetMediaSessionState(null);
+        _initialized = false;
+    }
+
+    private static void ResetMediaSessionState(ZNet? session)
+    {
         CancelBuild();
         _preparedSources.Clear();
         _activeManifest = "";
         _activeRecords = Array.Empty<ManifestRecord>();
         _waitingManifest = "";
         _waitingRecords = null;
-        DisposeEmojiSync();
+        ResetEmojiSyncSession(session);
         ReplaceRuntime(null);
-        _initialized = false;
     }
 
     public static void Tick()
@@ -266,24 +316,27 @@ internal static partial class ClanEmoji
         if (!ReferenceEquals(currentSession, _session))
         {
             _session = currentSession;
-            CancelBuild();
-            _preparedSources.Clear();
-            _activeManifest = "";
-            _activeRecords = Array.Empty<ManifestRecord>();
-            _waitingManifest = "";
-            _waitingRecords = null;
-            ResetEmojiSyncSession(currentSession);
             if (_pendingManifest != null &&
                 !ReferenceEquals(_pendingManifest.Session, currentSession))
             {
                 _pendingManifest = null;
             }
-            ReplaceRuntime(null);
+            ResetMediaSessionState(currentSession);
 
             if (currentSession?.IsServer() == true)
             {
                 LoadServerManifest(preserveLastGood: false);
             }
+        }
+
+        // A client needs the shared cache before it can download synchronized
+        // media. Servers serve their validated in-memory catalog directly, so a
+        // LocalLow cache failure must not block session reset or catalog loading.
+        if (currentSession != null &&
+            !currentSession.IsServer() &&
+            !EnsureMediaCacheInitialized())
+        {
+            return;
         }
 
         if (currentSession?.IsServer() == true && ConsumeEmojiServerReloadRequest())
@@ -483,17 +536,29 @@ internal static partial class ClanEmoji
 
     private static void LoadServerManifest(bool preserveLastGood)
     {
+        Dictionary<string, long> dirtyPaths;
+        List<ServerEmojiBlob> blobs;
+        Dictionary<string, ServerFileStamp> fileStamps;
+        List<string> fileWarnings;
+        List<Exception> retryableFileErrors;
+        List<string> retryableFilePaths;
+        List<ManifestRecord> records;
+        string manifest;
+        bool catalogChanged;
+        ServerEmojiCatalog? preparedCatalog;
+        bool publishRetryPending;
+
         try
         {
             Directory.CreateDirectory(EmojiDirectory);
             Directory.CreateDirectory(EmblemDirectory);
-            Dictionary<string, long> dirtyPaths = SnapshotDirtyServerMediaPaths();
-            List<ServerEmojiBlob> blobs = new();
-            Dictionary<string, ServerFileStamp> fileStamps = new(StringComparer.Ordinal);
-            List<string> fileWarnings = new();
-            List<Exception> retryableFileErrors = new();
-            List<string> retryableFilePaths = new();
-            List<ManifestRecord> records = DiscoverServerFiles(
+            dirtyPaths = SnapshotDirtyServerMediaPaths();
+            blobs = new List<ServerEmojiBlob>();
+            fileStamps = new Dictionary<string, ServerFileStamp>(StringComparer.Ordinal);
+            fileWarnings = new List<string>();
+            retryableFileErrors = new List<Exception>();
+            retryableFilePaths = new List<string>();
+            records = DiscoverServerFiles(
                 preserveLastGood,
                 dirtyPaths,
                 blobs,
@@ -501,26 +566,119 @@ internal static partial class ClanEmoji
                 fileWarnings,
                 retryableFileErrors,
                 retryableFilePaths);
-            string manifest = SerializeManifest(records);
-            bool catalogChanged = !IsCurrentEmojiServerManifest(manifest);
-            if (catalogChanged)
-            {
-                PublishEmojiServerCatalog(manifest, records, blobs);
-            }
+            manifest = SerializeManifest(records);
+            catalogChanged = !IsCurrentEmojiServerManifest(manifest);
+            preparedCatalog = catalogChanged
+                ? PrepareEmojiServerCatalog(manifest, records, blobs)
+                : null;
+            publishRetryPending = _serverManifestPublishRetryPending;
 
             if (!preserveLastGood ||
+                publishRetryPending ||
                 !StringComparer.Ordinal.Equals(SyncedManifest.Value, manifest))
             {
-                SyncedManifest.Value = manifest;
-            }
+                try
+                {
+                    SyncedManifest.Value = manifest;
+                    _serverManifestPublishRetryPending = false;
+                }
+                catch (Exception publishError)
+                {
+                    _serverManifestPublishRetryPending = true;
+                    bool targetManifestWasAssigned = StringComparer.Ordinal.Equals(
+                        SyncedManifest.Value,
+                        manifest);
+                    if (targetManifestWasAssigned && preparedCatalog != null)
+                    {
+                        // ServerSync assigns BoxedValue before it invokes the
+                        // broadcast callback. Keep the server catalog consistent
+                        // with that observable value even when the callback fails.
+                        CommitEmojiServerCatalog(preparedCatalog);
+                        preparedCatalog = null;
+                    }
 
-            if (catalogChanged && !GUIManager.IsHeadless())
+                    ScheduleEmojiServerReloadRetry(
+                        publishError,
+                        retryAnyError: true);
+                    if (targetManifestWasAssigned && !GUIManager.IsHeadless())
+                    {
+                        QueueManifest(manifest);
+                    }
+
+                    ClanPlugin.ClanLogger.LogWarning(
+                        targetManifestWasAssigned
+                            ? $"Clan media manifest was assigned, but its synchronization failed and will be retried: {publishError.Message}"
+                            : $"Clan media manifest synchronization failed; the last valid catalog remains active and publication will be retried: {publishError.Message}");
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (preserveLastGood && HasEmojiServerCatalog)
             {
-                QueueManifest(manifest);
+                ScheduleEmojiServerReloadRetry(ex);
+                ClanPlugin.ClanLogger.LogWarning(
+                    $"Clan media hot reload was rejected; the last valid catalog remains active: {ex.Message}");
+                return;
             }
 
-            _serverFileStamps = fileStamps;
+            if (_serverManifestPublishRetryPending ||
+                !StringComparer.Ordinal.Equals(SyncedManifest.Value, ""))
+            {
+                try
+                {
+                    SyncedManifest.Value = "";
+                    _serverManifestPublishRetryPending = false;
+                }
+                catch (Exception publishError)
+                {
+                    _serverManifestPublishRetryPending = true;
+                    bool emptyManifestWasAssigned = StringComparer.Ordinal.Equals(
+                        SyncedManifest.Value,
+                        "");
+                    ScheduleEmojiServerReloadRetry(
+                        publishError,
+                        retryAnyError: true);
+                    if (emptyManifestWasAssigned)
+                    {
+                        ClearEmojiServerCatalog();
+                        if (!GUIManager.IsHeadless())
+                        {
+                            QueueManifest("");
+                        }
+                    }
+                    ClanPlugin.ClanLogger.LogWarning(
+                        emptyManifestWasAssigned
+                            ? $"Clan media was disabled after catalog loading failed, but empty-manifest synchronization also failed and remains pending: {publishError.Message}"
+                            : $"Clan media catalog loading failed and the previous manifest could not be replaced; publication remains pending: {publishError.Message}");
+                    return;
+                }
+            }
+
+            ClearEmojiServerCatalog();
+            if (!GUIManager.IsHeadless())
+            {
+                QueueManifest("");
+            }
+            ClanPlugin.ClanLogger.LogError(
+                $"Clan media manifest was disabled: {ex.Message}");
+            return;
+        }
+
+        if (preparedCatalog != null)
+        {
+            CommitEmojiServerCatalog(preparedCatalog);
+        }
+        if ((catalogChanged || publishRetryPending) && !GUIManager.IsHeadless())
+        {
+            QueueManifest(manifest);
+        }
+
+        try
+        {
             AcknowledgeDirtyServerMediaPaths(dirtyPaths, retryableFilePaths);
+            _serverFileStamps = fileStamps;
 
             if (retryableFileErrors.Count == 0)
             {
@@ -565,29 +723,12 @@ internal static partial class ClanEmoji
             ClanPlugin.ClanLogger.LogInfo(
                 $"Published Clan media catalog for {pngCount} PNG emoji, {gifCount} GIF emoji, " +
                 $"and {emblemCount} PNG emblem files. " +
-                "Clients download only content missing from their SHA-256 cache.");
+                "Clients download only content missing from verified local media and their SHA-256 cache.");
         }
         catch (Exception ex)
         {
-            if (preserveLastGood && HasEmojiServerCatalog)
-            {
-                ScheduleEmojiServerReloadRetry(ex);
-                ClanPlugin.ClanLogger.LogWarning(
-                    $"Clan media hot reload was rejected; the last valid catalog remains active: {ex.Message}");
-                return;
-            }
-
-            ClearEmojiServerCatalog();
-            if (!StringComparer.Ordinal.Equals(SyncedManifest.Value, ""))
-            {
-                SyncedManifest.Value = "";
-            }
-            if (!GUIManager.IsHeadless())
-            {
-                QueueManifest("");
-            }
-            ClanPlugin.ClanLogger.LogError(
-                $"Clan media manifest was disabled: {ex.Message}");
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Clan media catalog is active, but post-publish maintenance could not be completed: {ex.Message}");
         }
     }
 
@@ -2258,13 +2399,25 @@ internal static partial class ClanEmoji
         _runtime = next;
         try
         {
-            EnsureOutputAttachment();
+            try
+            {
+                EnsureOutputAttachment();
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    ClanPlugin.ClanLogger.LogWarning(
+                        $"Clan media UI attachment will be retried: {ex.Message}");
+                }
+                catch
+                {
+                    // A third-party log listener must not suppress the committed
+                    // runtime notification or the previous runtime cleanup.
+                }
+            }
+
             NotifyChanged();
-        }
-        catch (Exception ex)
-        {
-            ClanPlugin.ClanLogger.LogWarning(
-                $"Clan media UI attachment will be retried: {ex.Message}");
         }
         finally
         {
@@ -2408,24 +2561,28 @@ internal static partial class ClanEmoji
 
     private static void NotifyChanged()
     {
-        try
+        PublishMediaChanged(EmojiChanged, "emoji");
+        PublishMediaChanged(EmblemsChanged, "emblem");
+    }
+
+    private static void PublishMediaChanged(Action? handlers, string mediaKind)
+    {
+        if (handlers == null)
         {
-            EmojiChanged?.Invoke();
-        }
-        catch (Exception ex)
-        {
-            ClanPlugin.ClanLogger.LogWarning(
-                $"Clan emoji UI refresh failed: {ex.Message}");
+            return;
         }
 
-        try
+        foreach (Action handler in handlers.GetInvocationList())
         {
-            EmblemsChanged?.Invoke();
-        }
-        catch (Exception ex)
-        {
-            ClanPlugin.ClanLogger.LogWarning(
-                $"Clan emblem UI refresh failed: {ex.Message}");
+            try
+            {
+                handler();
+            }
+            catch (Exception ex)
+            {
+                ClanPlugin.ClanLogger.LogWarning(
+                    $"Clan {mediaKind} UI refresh failed: {ex.Message}");
+            }
         }
     }
 

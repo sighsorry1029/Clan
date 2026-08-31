@@ -136,6 +136,8 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="ClanModels.cs"/>
+        <Compile Include="LocalizationManager.cs"/>
+        <Compile Include="ClanLocalization.cs"/>
         <Compile Include="ClanApi.cs"/>
         <Compile Include="ClanIdentity.cs"/>
         <Compile Include="ClanRegistry.cs"/>
@@ -153,6 +155,14 @@
         <Compile Include="ClanVanillaChatDock.cs"/>
         <Compile Include="Plugin.cs"/>
         <Compile Include="Properties\AssemblyInfo.cs"/>
+    </ItemGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="translations\English.yml">
+            <LogicalName>Clan.translations.English.yml</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include="translations\Korean.yml">
+            <LogicalName>Clan.translations.Korean.yml</LogicalName>
+        </EmbeddedResource>
     </ItemGroup>
     <ItemGroup>
         <Content Include=".gitignore"/>
@@ -192,10 +202,10 @@
         </ItemGroup>
         <Error Text="Failed to get Assembly Version." Condition="'%(AssemblyVersions.Identity)' == ''"/>
         <PropertyGroup>
-            <AssemblyVersion>%(AssemblyVersions.Identity)</AssemblyVersion>
-            <Major>$(AssemblyVersion.Split('.')[0])</Major>
-            <Minor>$(AssemblyVersion.Split('.')[1])</Minor>
-            <Patch>$(AssemblyVersion.Split('.')[2])</Patch>
+            <BuiltAssemblyVersion>%(AssemblyVersions.Identity)</BuiltAssemblyVersion>
+            <Major>$(BuiltAssemblyVersion.Split('.')[0])</Major>
+            <Minor>$(BuiltAssemblyVersion.Split('.')[1])</Minor>
+            <Patch>$(BuiltAssemblyVersion.Split('.')[2])</Patch>
             <PackageName>$(AssemblyName)_v$(Major).$(Minor).$(Patch)</PackageName>
             <PackageVersion>$(Major).$(Minor).$(Patch)</PackageVersion>
             <VersionString>$(Major).$(Minor).$(Patch)</VersionString>
@@ -214,16 +224,23 @@
         <Error Text="manifest.json not found in Thunderstore directory." Condition="!Exists('$(ProjectDir)\Thunderstore\manifest.json')"/>
         <Error Text="icon.png not found in Thunderstore directory. Please note that Thunderstore requires this image to be 256x256 in dimension" Condition="!Exists('$(ProjectDir)\Thunderstore\icon.png')"/>
         <Error Text="README.md not found in project directory." Condition="!Exists('$(ProjectDir)\README.md')"/>
+        <Error Text="English.yml not found in translations directory." Condition="!Exists('$(ProjectDir)\translations\English.yml')"/>
+        <Error Text="BepInEx package directory not found in Thunderstore directory." Condition="!Exists('$(ProjectDir)\Thunderstore\BepInEx')"/>
         <ItemGroup>
-            <PackageFiles Include="$(TargetDir)$(AssemblyName).dll" Condition="Exists('$(TargetDir)$(AssemblyName).dll')"/>
-            <PackageFiles Include="$(ProjectDir)\Thunderstore\CHANGELOG.md" Condition="Exists('$(ProjectDir)\Thunderstore\CHANGELOG.md')"/>
-            <PackageFiles Include="$(ProjectDir)\Thunderstore\manifest.json" Condition="Exists('$(ProjectDir)\Thunderstore\manifest.json')"/>
-            <PackageFiles Include="$(ProjectDir)\Thunderstore\icon.png" Condition="Exists('$(ProjectDir)\Thunderstore\icon.png')"/>
-            <PackageFiles Include="$(ProjectDir)\README.md" Condition="Exists('$(ProjectDir)\README.md')"/>
-            <PackageFiles Include="$(ProjectDir)\LICENSE.txt" Condition="Exists('$(ProjectDir)\LICENSE.txt')"/>
+            <ThunderstoreRootFiles Include="$(TargetDir)$(AssemblyName).dll"/>
+            <ThunderstoreRootFiles Include="$(ProjectDir)\Thunderstore\CHANGELOG.md"/>
+            <ThunderstoreRootFiles Include="$(ProjectDir)\Thunderstore\manifest.json"/>
+            <ThunderstoreRootFiles Include="$(ProjectDir)\Thunderstore\icon.png"/>
+            <ThunderstoreBepInExFiles Include="$(ProjectDir)\Thunderstore\BepInEx\**\*"/>
         </ItemGroup>
+        <RemoveDir Directories="$(PackageDir)" Condition="Exists('$(PackageDir)')"/>
         <MakeDir Directories="$(PackageDir)"/>
-        <Copy SourceFiles="@(PackageFiles)" DestinationFolder="$(PackageDir)"/>
+        <Copy SourceFiles="@(ThunderstoreRootFiles)" DestinationFolder="$(PackageDir)"/>
+        <Copy SourceFiles="$(ProjectDir)\README.md" DestinationFiles="$(PackageDir)\README.md"/>
+        <Copy SourceFiles="$(ProjectDir)\translations\English.yml" DestinationFiles="$(PackageDir)\Clan.English.yml"/>
+        <Copy
+            SourceFiles="@(ThunderstoreBepInExFiles)"
+            DestinationFiles="@(ThunderstoreBepInExFiles->'$(PackageDir)\BepInEx\%(RecursiveDir)%(Filename)%(Extension)')"/>
         <ZipDirectory SourceDirectory="$(PackageDir)" DestinationFile="Thunderstore\$(PackageName).zip" Overwrite="true"/>
         <RemoveDir Directories="$(PackageDir)"/>
     </Target>

@@ -8,18 +8,18 @@ namespace Clan;
 
 internal static class ClanRpc
 {
-    internal const string IdentityNotReadyStatus =
-        "Unable to identify clan character. Character data may still be loading.";
-    internal const string IdentityRejectedStatus =
-        "Unable to verify clan character ownership.";
-    internal const string SnapshotRateLimitedStatus =
-        "Clan snapshot refresh is temporarily rate limited.";
-    internal const string MutationRateLimitedStatus =
-        "Clan changes are temporarily rate limited. Please wait a few seconds.";
-    internal const string DirectoryRateLimitedStatus =
-        "Clan directory refresh is temporarily rate limited.";
-    internal const string StateUnavailableStatus =
-        "Clan state is temporarily unavailable.";
+    internal static readonly string IdentityNotReadyStatus =
+        ClanLocalization.EncodeStatus("clan_status_identity_not_ready");
+    internal static readonly string IdentityRejectedStatus =
+        ClanLocalization.EncodeStatus("clan_status_identity_rejected");
+    internal static readonly string SnapshotRateLimitedStatus =
+        ClanLocalization.EncodeStatus("clan_status_snapshot_rate_limited");
+    internal static readonly string MutationRateLimitedStatus =
+        ClanLocalization.EncodeStatus("clan_status_mutation_rate_limited");
+    internal static readonly string DirectoryRateLimitedStatus =
+        ClanLocalization.EncodeStatus("clan_status_directory_rate_limited");
+    internal static readonly string StateUnavailableStatus =
+        ClanLocalization.EncodeStatus("clan_status_state_unavailable");
 
     private const int MaximumRequestBytes = 16 * 1024;
     private const int MaximumDirectoryResponseBytes = 512 * 1024;
@@ -31,13 +31,17 @@ internal static class ClanRpc
     private const float HudRequestWindowSeconds = 2f;
     private const int MaximumMutationRequestsPerWindow = 6;
     private const float MutationRequestWindowSeconds = 5f;
+    private const int MutationBudgetPruneThreshold = 256;
     private const int InitialSnapshotRetryCount = 20;
     private const float InitialSnapshotRetryIntervalSeconds = 0.5f;
-    private const string DirectoryTruncatedStatus =
-        "Clan directory was truncated to fit the network response limit.";
+    private const string ProtocolVersion = "v13";
+    private static readonly string DirectoryTruncatedStatus =
+        ClanLocalization.EncodeStatus("clan_status_directory_truncated");
 
-    private static readonly string RequestRpc = $"{ClanPlugin.ModGUID}.rpc.request.v12";
-    private static readonly string ResponseRpc = $"{ClanPlugin.ModGUID}.rpc.response.v12";
+    private static readonly string RequestRpc =
+        $"{ClanPlugin.ModGUID}.rpc.request.{ProtocolVersion}";
+    private static readonly string ResponseRpc =
+        $"{ClanPlugin.ModGUID}.rpc.response.{ProtocolVersion}";
     private static readonly Dictionary<ZRpc, RequestBudget> DirectoryRequestBudgets = new();
     private static readonly Dictionary<ZRpc, RequestBudget> SnapshotRequestBudgets = new();
     private static readonly Dictionary<ZRpc, RequestBudget> HudRequestBudgets = new();
@@ -55,7 +59,6 @@ internal static class ClanRpc
     private static bool _retryDirectoryWhenIdentityReady;
     private static float _directoryIdentityRetryAt;
     private static bool _hudRecoveryRequestInProgress;
-    private static int _diagnosticSessionOrdinal;
 
     public static ClanClientSnapshot CurrentSnapshot { get; private set; } = new();
     public static ClanHudSnapshot CurrentHudSnapshot { get; private set; } = new();
@@ -78,7 +81,9 @@ internal static class ClanRpc
         }
         catch (InvalidDataException ex)
         {
-            NotifyStatus($"Invalid clan request: {ex.Message}");
+            ClanPlugin.ClanLogger.LogWarning(
+                $"Rejected invalid local clan request: {ex.Message}");
+            NotifyStatus(ClanLocalization.Text("clan_status_invalid_request_server"));
             return false;
         }
 
@@ -96,27 +101,13 @@ internal static class ClanRpc
             return true;
         }
 
-        NotifyStatus("Clan server is not connected.");
+        NotifyStatus(ClanLocalization.Text("clan_status_server_not_connected"));
         return false;
     }
 
-    public static void RequestSnapshot(string reason = "manual")
+    public static void RequestSnapshot()
     {
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Snapshot request session={_diagnosticSessionOrdinal}; " +
-            $"frame={Time.frameCount}; reason={reason}; " +
-            $"bootstrapStarted={_initialSnapshotBootstrapStarted}; " +
-            $"bootstrapComplete={_initialSnapshotBootstrapComplete}; " +
-            $"retriesRemaining={_initialSnapshotRetriesRemaining}; " +
-            $"transportReady={CanRunInitialSnapshotBootstrap()}; " +
-            $"currentHasClan={CurrentSnapshot.HasClan}.");
-        if (!Send(ClanRequest.Simple(ClanRequestType.RequestSnapshot)))
-        {
-            ClanPlugin.ClanLogger.LogInfo(
-                $"[Clan.Diag] Snapshot request send failed " +
-                $"session={_diagnosticSessionOrdinal}; frame={Time.frameCount}; " +
-                $"reason={reason}.");
-        }
+        Send(ClanRequest.Simple(ClanRequestType.RequestSnapshot));
     }
 
     public static void RequestHudSnapshot(string clanId)
@@ -154,7 +145,7 @@ internal static class ClanRpc
         {
             _initialSnapshotRetriesRemaining--;
             _nextInitialSnapshotRetryAt = now + InitialSnapshotRetryIntervalSeconds;
-            RequestSnapshot("bootstrap-retry");
+            RequestSnapshot();
         }
 
         if (_identityReady &&
@@ -163,30 +154,6 @@ internal static class ClanRpc
         {
             _retryDirectoryWhenIdentityReady = false;
             RequestDirectory();
-        }
-    }
-
-    private static void RequestInitialSnapshot(string trigger)
-    {
-        if (_initialSnapshotBootstrapStarted || _initialSnapshotBootstrapComplete)
-        {
-            return;
-        }
-
-        _initialSnapshotBootstrapStarted = true;
-        _identityReady = false;
-        _initialSnapshotRetriesRemaining = InitialSnapshotRetryCount;
-        _nextInitialSnapshotRetryAt = Time.realtimeSinceStartup;
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Snapshot bootstrap started " +
-            $"session={_diagnosticSessionOrdinal}; frame={Time.frameCount}; " +
-            $"trigger={trigger}; " +
-            $"transportReady={CanRunInitialSnapshotBootstrap()}; " +
-            $"retries={InitialSnapshotRetryCount}.");
-        if (CanRunInitialSnapshotBootstrap())
-        {
-            _nextInitialSnapshotRetryAt += InitialSnapshotRetryIntervalSeconds;
-            RequestSnapshot($"bootstrap-{trigger}");
         }
     }
 
@@ -199,7 +166,15 @@ internal static class ClanRpc
             return;
         }
 
-        RequestInitialSnapshot("tick-fallback");
+        _initialSnapshotBootstrapStarted = true;
+        _identityReady = false;
+        _initialSnapshotRetriesRemaining = InitialSnapshotRetryCount;
+        _nextInitialSnapshotRetryAt = Time.realtimeSinceStartup;
+        if (CanRunInitialSnapshotBootstrap())
+        {
+            _nextInitialSnapshotRetryAt += InitialSnapshotRetryIntervalSeconds;
+            RequestSnapshot();
+        }
     }
 
     private static bool CanRunInitialSnapshotBootstrap()
@@ -211,26 +186,6 @@ internal static class ClanRpc
                (network.GetServerRPC() != null || network.IsServer());
     }
 
-    private static void LogSnapshotResponse(
-        ClanClientSnapshot snapshot,
-        bool transientFailure)
-    {
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Snapshot response session={_diagnosticSessionOrdinal}; " +
-            $"frame={Time.frameCount}; result={snapshot.ResponseResultCode}; " +
-            $"trackedRequest={snapshot.ResponseRequestId > 0L}; " +
-            $"updatesCurrent={!transientFailure}; " +
-            $"previousHasClan={CurrentSnapshot.HasClan}; " +
-            $"incomingHasClan={snapshot.HasClan}; " +
-            $"effectiveClanChanged={!StringComparer.Ordinal.Equals(CurrentSnapshot.ClanId, snapshot.ClanId)}; " +
-            $"hasPrimary={snapshot.HasPrimaryClan}; hasGuest={snapshot.HasGuestClan}; " +
-            $"roster={snapshot.Roster.Count}; applications={snapshot.Applications.Count}; " +
-            $"invite={snapshot.Invite != null}; ownApplication={snapshot.HasOwnApplication}; " +
-            $"bootstrapStarted={_initialSnapshotBootstrapStarted}; " +
-            $"bootstrapComplete={_initialSnapshotBootstrapComplete}; " +
-            $"retriesRemaining={_initialSnapshotRetriesRemaining}.");
-    }
-
     public static long RequestDirectory()
     {
         _retryDirectoryWhenIdentityReady = false;
@@ -239,7 +194,7 @@ internal static class ClanRpc
             (network.GetServerRPC() == null && !network.IsServer()))
         {
             _pendingDirectoryRequestId = 0L;
-            NotifyStatus("Clan server is not connected.");
+            NotifyStatus(ClanLocalization.Text("clan_status_server_not_connected"));
             return 0L;
         }
 
@@ -275,12 +230,12 @@ internal static class ClanRpc
         _retryDirectoryWhenIdentityReady = true;
         _directoryIdentityRetryAt = Time.realtimeSinceStartup + DirectoryRequestWindowSeconds + 0.1f;
         CurrentDirectory = new ClanDirectorySnapshot();
-        DirectoryChanged?.Invoke(CurrentDirectory);
+        Publish(DirectoryChanged, CurrentDirectory, "directory");
     }
 
     public static void NotifyStatus(string message)
     {
-        StatusReceived?.Invoke(message);
+        Publish(StatusReceived, ClanLocalization.ResolveStatus(message), "status");
     }
 
     public static bool TryPinPeerIdentity(ZNetPeer? peer, ClanPlayerRef player)
@@ -340,7 +295,11 @@ internal static class ClanRpc
             return;
         }
 
-        MarkDirectoryTruncated(snapshot);
+        snapshot.IsTruncated = true;
+        if (string.IsNullOrWhiteSpace(snapshot.Status))
+        {
+            snapshot.Status = DirectoryTruncatedStatus;
+        }
         playerCount = FindLargestPlayerPrefix(snapshot, clanCount, playerCount);
         response = CreateDirectoryResponse(snapshot, clanCount, playerCount);
         if (response.Size() > MaximumDirectoryResponseBytes)
@@ -351,7 +310,8 @@ internal static class ClanRpc
         }
         if (response.Size() > MaximumDirectoryResponseBytes)
         {
-            snapshot.Status = "Clan directory exceeds the network response limit.";
+            snapshot.Status = ClanLocalization.EncodeStatus(
+                "clan_status_directory_response_too_large");
             snapshot.IsTruncated = true;
             response = CreateDirectoryResponse(snapshot, 0, 0);
         }
@@ -410,22 +370,6 @@ internal static class ClanRpc
         return best;
     }
 
-    private static void MarkDirectoryTruncated(ClanDirectorySnapshot snapshot)
-    {
-        snapshot.IsTruncated = true;
-        if (string.IsNullOrWhiteSpace(snapshot.Status))
-        {
-            snapshot.Status = DirectoryTruncatedStatus;
-            return;
-        }
-
-        string combined = snapshot.Status + "\n" + DirectoryTruncatedStatus;
-        if (combined.Length <= ClanDataRules.MaxStatusLength)
-        {
-            snapshot.Status = combined;
-        }
-    }
-
     private static ZPackage CreateDirectoryResponse(
         ClanDirectorySnapshot snapshot,
         int clanCount,
@@ -443,8 +387,13 @@ internal static class ClanRpc
         ZPackage response = new();
         response.Write((int)ClanResponseType.Chat);
         ClanDataRules.WriteClanId(response, clan.ClanId);
-        response.Write(senderName);
-        response.Write(message);
+        ClanDataRules.WritePlayerName(response, senderName, "chat sender");
+        ClanDataRules.WriteText(
+            response,
+            message,
+            ClanDataRules.MaxChatMessageLength,
+            "chat message",
+            allowEmpty: false);
         foreach (ClanMember member in clan.Members.Values)
         {
             if (!ClanRegistry.IsEffectiveMember(clan, member))
@@ -580,18 +529,18 @@ internal static class ClanRpc
                     ClanClientSnapshot snapshot = ClanClientSnapshot.Read(package);
                     RequirePackageConsumed(package);
                     packageValidated = true;
+                    snapshot.Status = ClanLocalization.ResolveStatus(snapshot.Status);
                     bool transientSnapshotFailure = snapshot.ResponseResultCode is
                         ClanOperationResultCode.IdentityUnavailable or
                         ClanOperationResultCode.SnapshotRateLimited or
                         ClanOperationResultCode.RateLimited or
                         ClanOperationResultCode.Unavailable;
-                    LogSnapshotResponse(snapshot, transientSnapshotFailure);
                     if (transientSnapshotFailure)
                     {
                         if (snapshot.ResponseRequestId > 0L)
                         {
                             CopySnapshotPresentation(CurrentSnapshot, snapshot);
-                            SnapshotChanged?.Invoke(snapshot);
+                            Publish(SnapshotChanged, snapshot, "snapshot");
                         }
                         if (!_initialSnapshotBootstrapComplete &&
                             _initialSnapshotRetriesRemaining > 0 &&
@@ -608,10 +557,9 @@ internal static class ClanRpc
                             _nextInitialSnapshotRetryAt =
                                 Time.realtimeSinceStartup + SnapshotRequestWindowSeconds + 0.1f;
                         }
-                        StatusReceived?.Invoke(snapshot.Status);
+                        Publish(StatusReceived, snapshot.Status, "status");
                         break;
                     }
-                    bool bootstrapWasComplete = _initialSnapshotBootstrapComplete;
                     bool bootstrapRetryableFailure =
                         !_initialSnapshotBootstrapComplete &&
                         snapshot.ResponseResultCode == ClanOperationResultCode.Failed;
@@ -635,22 +583,13 @@ internal static class ClanRpc
                     if (effectiveClanChanged)
                     {
                         CurrentHudSnapshot = new ClanHudSnapshot();
-                        HudSnapshotChanged?.Invoke(CurrentHudSnapshot);
+                        Publish(HudSnapshotChanged, CurrentHudSnapshot, "HUD snapshot");
                     }
                     ClanMap.OnSnapshotChanged(CurrentSnapshot);
-                    SnapshotChanged?.Invoke(CurrentSnapshot);
+                    Publish(SnapshotChanged, CurrentSnapshot, "snapshot");
                     if (!string.IsNullOrWhiteSpace(CurrentSnapshot.Status))
                     {
-                        StatusReceived?.Invoke(CurrentSnapshot.Status);
-                    }
-                    if (!bootstrapWasComplete && _initialSnapshotBootstrapComplete)
-                    {
-                        ClanPlugin.ClanLogger.LogInfo(
-                            $"[Clan.Diag] Snapshot bootstrap completed " +
-                            $"session={_diagnosticSessionOrdinal}; frame={Time.frameCount}; " +
-                            $"result={snapshot.ResponseResultCode}; " +
-                            $"identityReady={_identityReady}; " +
-                            $"hasClan={CurrentSnapshot.HasClan}.");
+                        Publish(StatusReceived, CurrentSnapshot.Status, "status");
                     }
                     break;
                 case ClanResponseType.Chat:
@@ -670,7 +609,7 @@ internal static class ClanRpc
                             chatClanId,
                             CurrentSnapshot.ClanId))
                     {
-                        ChatReceived?.Invoke(senderName, message);
+                        Publish(ChatReceived, senderName, message, "chat");
                     }
                     break;
                 case ClanResponseType.MapPing:
@@ -711,6 +650,7 @@ internal static class ClanRpc
                     ClanDirectorySnapshot directory = ClanDirectorySnapshot.Read(package);
                     RequirePackageConsumed(package);
                     packageValidated = true;
+                    directory.Status = ClanLocalization.ResolveStatus(directory.Status);
                     if (_pendingDirectoryRequestId <= 0L ||
                         directory.RequestId != _pendingDirectoryRequestId)
                     {
@@ -722,7 +662,7 @@ internal static class ClanRpc
                         _retryDirectoryWhenIdentityReady = true;
                         _directoryIdentityRetryAt =
                             Time.realtimeSinceStartup + DirectoryRequestWindowSeconds + 0.1f;
-                        StatusReceived?.Invoke(directory.Status);
+                        Publish(StatusReceived, directory.Status, "status");
                         break;
                     }
                     if (directory.ResultCode == ClanOperationResultCode.RateLimited)
@@ -742,10 +682,10 @@ internal static class ClanRpc
                         directory.IsTruncated = CurrentDirectory.IsTruncated;
                     }
                     CurrentDirectory = directory;
-                    DirectoryChanged?.Invoke(CurrentDirectory);
+                    Publish(DirectoryChanged, CurrentDirectory, "directory");
                     if (!string.IsNullOrWhiteSpace(CurrentDirectory.Status))
                     {
-                        StatusReceived?.Invoke(CurrentDirectory.Status);
+                        Publish(StatusReceived, CurrentDirectory.Status, "status");
                     }
                     break;
                 case ClanResponseType.DirectoryInvalidated:
@@ -755,7 +695,7 @@ internal static class ClanRpc
                     _retryDirectoryWhenIdentityReady = true;
                     _directoryIdentityRetryAt = Time.realtimeSinceStartup + 0.1f;
                     CurrentDirectory = new ClanDirectorySnapshot();
-                    DirectoryChanged?.Invoke(CurrentDirectory);
+                    Publish(DirectoryChanged, CurrentDirectory, "directory");
                     break;
                 default:
                     throw new InvalidOperationException($"Unknown clan response type {(int)type}.");
@@ -816,7 +756,7 @@ internal static class ClanRpc
         if (incoming.ReplaceSelection)
         {
             CurrentHudSnapshot = incoming;
-            HudSnapshotChanged?.Invoke(CurrentHudSnapshot);
+            Publish(HudSnapshotChanged, CurrentHudSnapshot, "HUD snapshot");
             return;
         }
 
@@ -865,7 +805,7 @@ internal static class ClanRpc
 
         CurrentHudSnapshot.StateRevision = incoming.StateRevision;
         CurrentHudSnapshot.ReplaceSelection = true;
-        HudSnapshotChanged?.Invoke(CurrentHudSnapshot);
+        Publish(HudSnapshotChanged, CurrentHudSnapshot, "HUD snapshot");
     }
 
     private static int FindHudPlayerIndex(ClanHudSnapshot snapshot, string playerId)
@@ -883,7 +823,7 @@ internal static class ClanRpc
     private static void ResetHudSnapshotAndRequestFull()
     {
         CurrentHudSnapshot = new ClanHudSnapshot();
-        HudSnapshotChanged?.Invoke(CurrentHudSnapshot);
+        Publish(HudSnapshotChanged, CurrentHudSnapshot, "HUD snapshot");
 
         string activeClanId = CurrentSnapshot.ClanId;
         if (string.IsNullOrWhiteSpace(activeClanId) || _hudRecoveryRequestInProgress)
@@ -916,7 +856,11 @@ internal static class ClanRpc
             package.SetPos(0);
             ClanRequest request = ClanRequest.Read(package);
             if (request.Type == ClanRequestType.RequestDirectory &&
-                !ConsumeDirectoryRequest(rpc))
+                !ConsumeRequest(
+                    rpc,
+                    DirectoryRequestBudgets,
+                    MaximumDirectoryRequestsPerWindow,
+                    DirectoryRequestWindowSeconds))
             {
                 SendDirectorySnapshot(peer, new ClanDirectorySnapshot
                 {
@@ -927,7 +871,11 @@ internal static class ClanRpc
                 return;
             }
             if (request.Type == ClanRequestType.RequestSnapshot &&
-                !ConsumeSnapshotRequest(rpc))
+                !ConsumeRequest(
+                    rpc,
+                    SnapshotRequestBudgets,
+                    MaximumSnapshotRequestsPerWindow,
+                    SnapshotRequestWindowSeconds))
             {
                 ClanRpc.SendSnapshot(peer, new ClanClientSnapshot
                 {
@@ -937,7 +885,11 @@ internal static class ClanRpc
                 return;
             }
             if (request.Type == ClanRequestType.RequestHud &&
-                !ConsumeHudRequest(rpc))
+                !ConsumeRequest(
+                    rpc,
+                    HudRequestBudgets,
+                    MaximumHudRequestsPerWindow,
+                    HudRequestWindowSeconds))
             {
                 return;
             }
@@ -949,16 +901,8 @@ internal static class ClanRpc
         }
     }
 
-    private static void ResetSession(string reason)
+    private static void ResetSession()
     {
-        _diagnosticSessionOrdinal++;
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Session reset session={_diagnosticSessionOrdinal}; " +
-            $"frame={Time.frameCount}; reason={reason}; " +
-            $"previousHasClan={CurrentSnapshot.HasClan}; " +
-            $"bootstrapStarted={_initialSnapshotBootstrapStarted}; " +
-            $"bootstrapComplete={_initialSnapshotBootstrapComplete}; " +
-            $"identityReady={_identityReady}.");
         CurrentSnapshot = new ClanClientSnapshot();
         CurrentHudSnapshot = new ClanHudSnapshot();
         CurrentDirectory = new ClanDirectorySnapshot();
@@ -980,36 +924,55 @@ internal static class ClanRpc
         ClanRegistry.ResetOnlinePresence();
         ClanMap.ResetSession();
         ClanPanelController.ResetSearchState();
-        SnapshotChanged?.Invoke(CurrentSnapshot);
-        HudSnapshotChanged?.Invoke(CurrentHudSnapshot);
-        DirectoryChanged?.Invoke(CurrentDirectory);
+        Publish(SnapshotChanged, CurrentSnapshot, "snapshot");
+        Publish(HudSnapshotChanged, CurrentHudSnapshot, "HUD snapshot");
+        Publish(DirectoryChanged, CurrentDirectory, "directory");
     }
 
-    private static bool ConsumeDirectoryRequest(ZRpc rpc)
+    private static void Publish<T>(Action<T>? subscribers, T value, string eventName)
     {
-        return ConsumeRequest(
-            rpc,
-            DirectoryRequestBudgets,
-            MaximumDirectoryRequestsPerWindow,
-            DirectoryRequestWindowSeconds);
+        if (subscribers == null)
+        {
+            return;
+        }
+
+        foreach (Action<T> subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                subscriber(value);
+            }
+            catch (Exception exception)
+            {
+                ClanPlugin.ClanLogger.LogWarning(
+                    $"Clan RPC {eventName} subscriber failed: {exception}");
+            }
+        }
     }
 
-    private static bool ConsumeSnapshotRequest(ZRpc rpc)
+    private static void Publish<TFirst, TSecond>(
+        Action<TFirst, TSecond>? subscribers,
+        TFirst first,
+        TSecond second,
+        string eventName)
     {
-        return ConsumeRequest(
-            rpc,
-            SnapshotRequestBudgets,
-            MaximumSnapshotRequestsPerWindow,
-            SnapshotRequestWindowSeconds);
-    }
+        if (subscribers == null)
+        {
+            return;
+        }
 
-    private static bool ConsumeHudRequest(ZRpc rpc)
-    {
-        return ConsumeRequest(
-            rpc,
-            HudRequestBudgets,
-            MaximumHudRequestsPerWindow,
-            HudRequestWindowSeconds);
+        foreach (Action<TFirst, TSecond> subscriber in subscribers.GetInvocationList())
+        {
+            try
+            {
+                subscriber(first, second);
+            }
+            catch (Exception exception)
+            {
+                ClanPlugin.ClanLogger.LogWarning(
+                    $"Clan RPC {eventName} subscriber failed: {exception}");
+            }
+        }
     }
 
     internal static bool ConsumeMutationRequest(ClanPlayerRef actor)
@@ -1020,6 +983,11 @@ internal static class ClanRpc
         }
 
         float now = Time.realtimeSinceStartup;
+        if (MutationRequestBudgets.Count >= MutationBudgetPruneThreshold &&
+            !MutationRequestBudgets.ContainsKey(actor.Id))
+        {
+            PruneExpiredMutationBudgets(now);
+        }
         if (!MutationRequestBudgets.TryGetValue(actor.Id, out RequestBudget budget))
         {
             budget = new RequestBudget(now);
@@ -1030,6 +998,29 @@ internal static class ClanRpc
             MaximumMutationRequestsPerWindow,
             MutationRequestWindowSeconds,
             now);
+    }
+
+    private static void PruneExpiredMutationBudgets(float now)
+    {
+        List<string>? expired = null;
+        foreach (KeyValuePair<string, RequestBudget> pair in MutationRequestBudgets)
+        {
+            float elapsed = now - pair.Value.WindowStartedAt;
+            if (elapsed >= MutationRequestWindowSeconds || elapsed < 0f)
+            {
+                expired ??= new List<string>();
+                expired.Add(pair.Key);
+            }
+        }
+
+        if (expired == null)
+        {
+            return;
+        }
+        foreach (string playerId in expired)
+        {
+            MutationRequestBudgets.Remove(playerId);
+        }
     }
 
     private static bool ConsumeRequest(
@@ -1094,19 +1085,7 @@ internal static class ClanRpc
     {
         private static void Postfix()
         {
-            ResetSession("game-start");
-        }
-    }
-
-    [HarmonyPatch(typeof(Game), nameof(Game.SpawnPlayer))]
-    private static class RequestSnapshotWhenPlayerIsReady
-    {
-        private static void Postfix(Player __result)
-        {
-            if (__result != null && __result == Player.m_localPlayer)
-            {
-                RequestInitialSnapshot("player-spawn");
-            }
+            ResetSession();
         }
     }
 
@@ -1115,7 +1094,7 @@ internal static class ClanRpc
     {
         private static void Prefix()
         {
-            ResetSession("network-shutdown");
+            ResetSession();
         }
     }
 

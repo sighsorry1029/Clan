@@ -35,9 +35,6 @@ internal static class ClanVanillaChatDock
     private const float EmojiCellSpacing = 4f;
     private const float EmojiTrayPadding = 6f;
     private const float EmojiScrollbarWidth = 2f;
-    private const float ScrollSensitivity = 196f;
-    private const float UnderfilledScrollSensitivity = 35f;
-    private const float UnderfilledScrollElasticity = 0.07f;
     private const float ScrollOverflowEpsilon = 0.5f;
     private const float EmojiTrayWidth =
         EmojiTrayPadding * 2f + EmojiCellSize * EmojiColumnCount +
@@ -50,20 +47,11 @@ internal static class ClanVanillaChatDock
     private const float MinimumChatScale = 1f;
     private const float FallbackChatInputWidth = 500f;
     private const float FallbackChatInputHeight = 36f;
-    private const float MaximumChatScale = 1.75f;
+    private const float MaximumChatScale = 2f;
     private const float ResizeCursorReleaseGrace = 0.2f;
-    private const float InactiveChatRectRefreshIntervalSeconds = 0.5f;
     private const float CommandConfirmationSeconds = 3f;
     private const int ChatRefocusTimeoutFrames = 4;
     private const int MaximumTrackedChatLines = 300;
-    private const int NotificationSuppressConsole = 1 << 0;
-    private const int NotificationSuppressTextInput = 1 << 1;
-    private const int NotificationSuppressMapTextInput = 1 << 2;
-    private const int NotificationSuppressMap = 1 << 3;
-    private const int NotificationSuppressMenu = 1 << 4;
-    private const int NotificationSuppressInventory = 1 << 5;
-    private const int NotificationSuppressStore = 1 << 6;
-    private const int NotificationSuppressPopup = 1 << 7;
 
     private enum Channel
     {
@@ -96,13 +84,6 @@ internal static class ClanVanillaChatDock
         Global
     }
 
-    private enum ChatPlacementSource
-    {
-        Live,
-        Cached,
-        Fallback
-    }
-
     private readonly struct ChatLineKindScope
     {
         public ChatLineKindScope(ChatLineKind previous)
@@ -111,6 +92,20 @@ internal static class ClanVanillaChatDock
         }
 
         public ChatLineKind Previous { get; }
+    }
+
+    private readonly struct MouseCapturePatchState
+    {
+        public MouseCapturePatchState(
+            bool releaseRequested,
+            bool originalMouseCapture)
+        {
+            ReleaseRequested = releaseRequested;
+            OriginalMouseCapture = originalMouseCapture;
+        }
+
+        public bool ReleaseRequested { get; }
+        public bool OriginalMouseCapture { get; }
     }
 
     private static readonly Dictionary<Channel, Button> ChannelButtons = new();
@@ -123,8 +118,6 @@ internal static class ClanVanillaChatDock
     private static readonly Color DisabledButtonColor = new(0.25f, 0.25f, 0.25f, 0.72f);
     private static readonly Color ButtonHoverColor = new(1f, 0.72f, 0.32f, 1f);
     private static readonly Color ConfirmationButtonColor = new(1f, 0.48f, 0.24f, 1f);
-    private static readonly Color NotificationButtonColor = new(1f, 0.64f, 0.2f, 1f);
-    private static readonly Color NotificationBadgeColor = new(1f, 0.56f, 0.12f, 1f);
     private static readonly Color InactiveButtonLabelColor = Color.gray;
     private static readonly Color DisabledButtonLabelColor = new(0.4f, 0.4f, 0.4f, 0.9f);
 
@@ -140,24 +133,12 @@ internal static class ClanVanillaChatDock
     private static RectTransform? _resizeHandleRect;
     private static RectTransform? _chatPanelRect;
     private static CanvasGroup? _clanButtonDockCanvasGroup;
-    private static GameObject? _clanNotificationBadge;
     private static bool? _clanButtonDockInteractive;
-    private static int _lastNotificationDiagnosticMask = int.MinValue;
-    private static int _lastNotificationDiagnosticApplications = -1;
-    private static int _lastNotificationDiagnosticRootId;
-    private static int _lastNotificationDiagnosticDockId;
-    private static bool _notificationPositionDiagnosticInitialized;
-    private static Vector2 _lastNotificationDiagnosticPosition;
-    private static bool _lastNotificationDiagnosticInputVisible;
-    private static bool _lastNotificationDiagnosticStandalone;
-    private static bool _lastNotificationDiagnosticLeftEdge;
-    private static bool _lastNotificationDiagnosticGeometryValid;
-    private static int _lastNotificationDiagnosticPanelId;
-    private static ChatPlacementSource _lastNotificationDiagnosticPlacementSource;
     private static bool _canResizeChatPanel;
     private static GameObject? _emojiTray;
     private static RectTransform? _emojiContent;
     private static Button? _clanPanelButton;
+    private static Text? _clanPanelButtonLabel;
     private static Button? _emojiTrayButton;
     private static Button? _chatViewButton;
     private static Button? _whisperButton;
@@ -179,12 +160,22 @@ internal static class ClanVanillaChatDock
     private static float _chatPlacementCacheCanvasScaleFactor;
     private static int _chatPlacementCacheCanvasId;
     private static int _chatPlacementCacheInputId;
-    private static float _nextInactiveChatRectRefreshAt;
+    private static bool _hasCachedClanDockPlacement;
+    private static Vector2 _cachedClanDockScreenPoint;
+    private static Vector2 _cachedClanDockPivot;
+    private static Vector3 _cachedClanDockLocalScale = Vector3.one;
+    private static int _clanDockCacheScreenWidth;
+    private static int _clanDockCacheScreenHeight;
+    private static Rect _clanDockCacheSafeArea;
+    private static float _clanDockCacheConfiguredScale;
+    private static int _clanDockCacheChatId;
+    private static int _clanDockCacheInputId;
     private static bool _isChatScaleDragging;
     private static bool _isChatScalePointerActive;
     private static float _keepResizeCursorReleasedUntil;
     private static int _chatRefocusFrame = -1;
     private static int _chatRefocusDeadlineFrame = -1;
+    private static int _emojiShortcutFocusFrame = -1;
     private static int _clanPanelCancelFrame = -1;
     private static Chat? _chatRefocusOwner;
     private static CommandAction _pendingCommand;
@@ -198,6 +189,8 @@ internal static class ClanVanillaChatDock
     private static bool _chatHistoryMismatchWarned;
     private static bool _chatFilterUnavailableWarned;
     private static bool _keepChatVisibleForClanPanel;
+    private static bool _reopenPanelAfterRebuild;
+    private static bool _keepChatVisibleAfterPanelRebuild;
     private static bool _shortcutSettingSubscribed;
     private static readonly FieldInfo? ChatBufferField =
         AccessTools.Field(typeof(Terminal), "m_chatBuffer");
@@ -220,7 +213,9 @@ internal static class ClanVanillaChatDock
         ClanEmoji.EmojiChanged += OnEmojiChanged;
         ClanEmoji.EmblemsChanged += OnEmblemsChanged;
         ClanPanelController.OpenStateChanged += OnClanPanelOpenStateChanged;
-        ClanPlugin.ClanPanelShortcut.SettingChanged += OnClanPanelShortcutChanged;
+        ClanLocalization.LanguageChanged += OnLanguageChanged;
+        ClanPlugin.ClanPanelShortcut.SettingChanged += OnPanelShortcutChanged;
+        ClanPlugin.EmojiPanelShortcut.SettingChanged += OnPanelShortcutChanged;
         _shortcutSettingSubscribed = true;
         Rebuild();
     }
@@ -235,9 +230,11 @@ internal static class ClanVanillaChatDock
         ClanEmoji.EmojiChanged -= OnEmojiChanged;
         ClanEmoji.EmblemsChanged -= OnEmblemsChanged;
         ClanPanelController.OpenStateChanged -= OnClanPanelOpenStateChanged;
+        ClanLocalization.LanguageChanged -= OnLanguageChanged;
         if (_shortcutSettingSubscribed)
         {
-            ClanPlugin.ClanPanelShortcut.SettingChanged -= OnClanPanelShortcutChanged;
+            ClanPlugin.ClanPanelShortcut.SettingChanged -= OnPanelShortcutChanged;
+            ClanPlugin.EmojiPanelShortcut.SettingChanged -= OnPanelShortcutChanged;
             _shortcutSettingSubscribed = false;
         }
         ReleaseChatScaleTarget(restoreScale: true);
@@ -249,16 +246,13 @@ internal static class ClanVanillaChatDock
 
     public static void Tick()
     {
+        if (ZNet.instance == null || Chat.instance == null)
+        {
+            ResetChatPlacementCache();
+        }
         if (ZNet.instance == null || Player.m_localPlayer == null || Chat.instance == null)
         {
-            if (HasDockState())
-            {
-                DestroyRoot();
-            }
-            else
-            {
-                CancelPendingChatRefocus();
-            }
+            DestroyRoot();
             return;
         }
 
@@ -304,12 +298,21 @@ internal static class ClanVanillaChatDock
         }
 
         bool handledPanelCancel = TryHandleClanPanelCancel();
+        bool handledShortcut = false;
         if (!handledPanelCancel && ShouldToggleClanPanelFromShortcut(chat, input))
         {
             ToggleClanPanel(
                 keepChatVisibleWhenOpening: IsChatInputOpen(input));
+            handledShortcut = true;
+        }
+        if (!handledPanelCancel &&
+            !handledShortcut &&
+            ShouldOpenEmojiTrayFromShortcut(chat, input))
+        {
+            OpenEmojiTrayFromShortcut(chat, input);
         }
 
+        ApplyPendingEmojiShortcutFocus(input);
         ApplyPendingChatRefocus(input);
 
         bool panelOpen = ClanPanelController.IsOpen;
@@ -333,13 +336,11 @@ internal static class ClanVanillaChatDock
         }
 
         ClanClientSnapshot snapshot = ClanRpc.CurrentSnapshot;
-        int notificationSuppressionMask =
-            GetStandaloneClanNotificationSuppressionMask();
-        bool showStandaloneClanNotification =
-            HasActionableClanNotification(snapshot) &&
-            !inputVisible &&
-            !panelOpen &&
-            notificationSuppressionMask == 0;
+        RefreshClanNotificationPulse(snapshot);
+        bool showStandaloneClanNotification = ShouldShowStandaloneClanNotification(
+            snapshot,
+            inputVisible,
+            panelOpen);
         bool showRoot = inputVisible || panelOpen || showStandaloneClanNotification;
         _root.SetActive(showRoot);
         if (_chatChromeRoot != null)
@@ -347,17 +348,18 @@ internal static class ClanVanillaChatDock
             _chatChromeRoot.SetActive(inputVisible);
         }
         SetClanButtonDockVisibility(inputVisible, showStandaloneClanNotification);
-        LogStandaloneNotificationStateIfChanged(
-            snapshot,
-            inputVisible,
-            panelOpen,
-            notificationSuppressionMask,
-            showStandaloneClanNotification);
         if (showRoot)
         {
-            if (inputVisible || showStandaloneClanNotification)
+            if (inputVisible)
             {
                 RefreshDockPositions(input);
+            }
+            else if (showStandaloneClanNotification)
+            {
+                if (_rootRect != null)
+                {
+                    PlaceStandaloneClanNotification(_rootRect);
+                }
             }
             else if (_rootRect != null)
             {
@@ -368,6 +370,11 @@ internal static class ClanVanillaChatDock
     }
 
     private static void Rebuild()
+    {
+        Rebuild(preservePanelInteractionState: _reopenPanelAfterRebuild);
+    }
+
+    private static void Rebuild(bool preservePanelInteractionState)
     {
         if (GUIManager.IsHeadless() || Chat.instance == null)
         {
@@ -389,94 +396,110 @@ internal static class ClanVanillaChatDock
             return;
         }
 
-        DestroyRoot();
+        bool preserveInteractionState =
+            preservePanelInteractionState || _reopenPanelAfterRebuild;
+        try
+        {
+            DestroyRoot(preserveInteractionState);
 
-        RectTransform inputRect = input.GetComponent<RectTransform>();
-        _chatPanelRect = ResolveChatPanelRect(inputRect);
-        _canResizeChatPanel = CanResizeDeclaredChatWindow(inputRect, _chatPanelRect);
-        RefreshChatScaleTarget(_chatPanelRect, _canResizeChatPanel);
-        Transform parent = GetOverlayParent(inputRect);
-        _root = ClanUiFactory.CreateObject("ClanVanillaChatDock", parent);
-        LayoutElement rootElement = _root.AddComponent<LayoutElement>();
-        rootElement.ignoreLayout = true;
+            RectTransform inputRect = input.GetComponent<RectTransform>();
+            _chatPanelRect = ResolveChatPanelRect(inputRect);
+            _canResizeChatPanel = CanResizeDeclaredChatWindow(inputRect, _chatPanelRect);
+            RefreshChatScaleTarget(_chatPanelRect, _canResizeChatPanel);
+            Transform parent = GetOverlayParent(inputRect);
+            _root = ClanUiFactory.CreateObject("ClanVanillaChatDock", parent);
+            LayoutElement rootElement = _root.AddComponent<LayoutElement>();
+            rootElement.ignoreLayout = true;
 
-        RectTransform rect = _root.GetComponent<RectTransform>();
-        _rootRect = rect;
-        StretchRoot(rect);
-        _root.transform.SetAsLastSibling();
+            RectTransform rect = _root.GetComponent<RectTransform>();
+            _rootRect = rect;
+            StretchRoot(rect);
+            _root.transform.SetAsLastSibling();
 
-        _chatChromeRoot = ClanUiFactory.CreateObject(
-            "ClanVanillaChatChrome",
-            _root.transform);
-        StretchRoot(_chatChromeRoot.GetComponent<RectTransform>());
+            _chatChromeRoot = ClanUiFactory.CreateObject(
+                "ClanVanillaChatChrome",
+                _root.transform);
+            StretchRoot(_chatChromeRoot.GetComponent<RectTransform>());
 
-        BuildChannelDock(_chatChromeRoot.transform, _root.transform);
-        BuildCommandDock(_chatChromeRoot.transform);
-        BuildEmojiTray(_chatChromeRoot.transform);
-        ClanPanelController.Build(_root.transform, rect);
-        BuildResizeHandle(_chatChromeRoot.transform);
-        ApplyClanDockScale();
-        RefreshDockPositions(input);
+            BuildChannelDock(_chatChromeRoot.transform, _root.transform);
+            BuildCommandDock(_chatChromeRoot.transform);
+            BuildEmojiTray(_chatChromeRoot.transform);
+            ClanPanelController.Build(
+                _root.transform,
+                rect,
+                preserveInteractionState: preserveInteractionState);
+            BuildResizeHandle(_chatChromeRoot.transform);
+            ApplyClanDockScale();
+            RefreshDockPositions(input);
 
-        RefreshUi(ClanRpc.CurrentSnapshot);
-        ClanPanelController.RefreshDirectory(ClanRpc.CurrentDirectory);
-        bool inputVisible = IsChatInputOpen(input);
-        bool panelOpen = ClanPanelController.IsOpen;
-        ClanClientSnapshot snapshot = ClanRpc.CurrentSnapshot;
-        int notificationSuppressionMask =
-            GetStandaloneClanNotificationSuppressionMask();
-        bool showStandaloneClanNotification =
-            HasActionableClanNotification(snapshot) &&
-            !inputVisible &&
-            !panelOpen &&
-            notificationSuppressionMask == 0;
-        _chatChromeRoot.SetActive(inputVisible);
-        SetClanButtonDockVisibility(inputVisible, showStandaloneClanNotification);
-        _root.SetActive(inputVisible || panelOpen || showStandaloneClanNotification);
-        LogChatDockLifecycle("rebuild", input);
-        LogStandaloneNotificationStateIfChanged(
-            snapshot,
-            inputVisible,
-            panelOpen,
-            notificationSuppressionMask,
-            showStandaloneClanNotification);
+            RefreshUi(ClanRpc.CurrentSnapshot);
+            ClanPanelController.RefreshDirectory(ClanRpc.CurrentDirectory);
+            RestorePanelAfterRebuild();
+            bool inputVisible = IsChatInputOpen(input);
+            bool panelOpen = ClanPanelController.IsOpen;
+            ClanClientSnapshot snapshot = ClanRpc.CurrentSnapshot;
+            bool showStandaloneClanNotification = ShouldShowStandaloneClanNotification(
+                snapshot,
+                inputVisible,
+                panelOpen);
+            if (showStandaloneClanNotification && _rootRect != null)
+            {
+                PlaceStandaloneClanNotification(_rootRect);
+            }
+            _chatChromeRoot.SetActive(inputVisible);
+            SetClanButtonDockVisibility(inputVisible, showStandaloneClanNotification);
+            _root.SetActive(inputVisible || panelOpen || showStandaloneClanNotification);
+        }
+        catch
+        {
+            DestroyRoot(preserveInteractionState);
+            throw;
+        }
     }
 
-    private static bool HasDockState()
+    private static void OnLanguageChanged()
     {
-        return _root != null ||
-               _chatChromeRoot != null ||
-               ChannelButtons.Count > 0 ||
-               _emojiButtonDockRect != null ||
-               _clanButtonDockRect != null ||
-               _clanButtonDockCanvasGroup != null ||
-               _clanNotificationBadge != null ||
-               _clanButtonDockInteractive != null ||
-               _chatViewDockRect != null ||
-               _commandDockRect != null ||
-               _clanPanelButton != null ||
-               _emojiTrayButton != null ||
-               _chatViewButton != null ||
-               _whisperButton != null ||
-               _resetSpawnButton != null ||
-               _dieButton != null ||
-               _emojiTrayOpen ||
-               _canResizeChatPanel ||
-               _isChatScaleDragging ||
-               _isChatScalePointerActive ||
-               ClanPanelController.IsOpen;
+        if (ClanPanelController.IsOpen)
+        {
+            _reopenPanelAfterRebuild = true;
+            _keepChatVisibleAfterPanelRebuild = _keepChatVisibleForClanPanel;
+        }
+
+        Rebuild(preservePanelInteractionState: _reopenPanelAfterRebuild);
     }
 
-    private static void DestroyRoot()
+    private static void RestorePanelAfterRebuild()
     {
+        if (!_reopenPanelAfterRebuild)
+        {
+            return;
+        }
+
+        if (!ClanPanelController.IsOpen)
+        {
+            ClanPanelController.Toggle();
+        }
+        _keepChatVisibleForClanPanel = _keepChatVisibleAfterPanelRebuild;
+        _reopenPanelAfterRebuild = false;
+        _keepChatVisibleAfterPanelRebuild = false;
+    }
+
+    private static void ClearPanelRebuildRecovery()
+    {
+        _reopenPanelAfterRebuild = false;
+        _keepChatVisibleAfterPanelRebuild = false;
+    }
+
+    private static void DestroyRoot(bool preservePanelInteractionState = false)
+    {
+        if (!preservePanelInteractionState)
+        {
+            ClearPanelRebuildRecovery();
+        }
+
         if (_isChatScaleDragging)
         {
             EndChatScaleDrag(save: true);
-        }
-
-        if (_root != null)
-        {
-            LogChatDockLifecycle("destroy", GetInputField());
         }
 
         ClearClanButtonDockSelection();
@@ -501,11 +524,11 @@ internal static class ClanVanillaChatDock
         _resizeHandleRect = null;
         _chatPanelRect = null;
         _clanButtonDockCanvasGroup = null;
-        _clanNotificationBadge = null;
         _clanButtonDockInteractive = null;
         _emojiTray = null;
         _emojiContent = null;
         _clanPanelButton = null;
+        _clanPanelButtonLabel = null;
         _emojiTrayButton = null;
         _chatViewButton = null;
         _whisperButton = null;
@@ -517,15 +540,15 @@ internal static class ClanVanillaChatDock
         _isChatScaleDragging = false;
         _isChatScalePointerActive = false;
         _keepResizeCursorReleasedUntil = 0f;
+        _emojiShortcutFocusFrame = -1;
         CancelPendingChatRefocus();
         ChannelButtons.Clear();
-        ClanPanelController.DestroyView();
+        ClanPanelController.DestroyView(preservePanelInteractionState);
 
         if (root != null)
         {
             UnityEngine.Object.Destroy(root);
         }
-        ResetStandaloneNotificationDiagnostics();
     }
 
     private static void CloseOverlays()
@@ -549,10 +572,16 @@ internal static class ClanVanillaChatDock
 
     private static void CloseEmojiTray()
     {
+        bool wasOpen = _emojiTrayOpen;
         _emojiTrayOpen = false;
         if (_emojiTray != null)
         {
             _emojiTray.SetActive(false);
+        }
+        if (wasOpen)
+        {
+            _emojiShortcutFocusFrame = -1;
+            RefreshEmojiPanelTooltip();
         }
     }
 
@@ -601,132 +630,27 @@ internal static class ClanVanillaChatDock
                (snapshot.CanModerate && snapshot.Applications.Count > 0);
     }
 
-    private static int GetStandaloneClanNotificationSuppressionMask()
+    private static bool ShouldShowStandaloneClanNotification(
+        ClanClientSnapshot snapshot,
+        bool chatInputVisible,
+        bool panelOpen)
     {
-        int mask = 0;
-        if (Console.IsVisible())
-        {
-            mask |= NotificationSuppressConsole;
-        }
-        if (TextInput.IsVisible())
-        {
-            mask |= NotificationSuppressTextInput;
-        }
-        if (Minimap.InTextInput())
-        {
-            mask |= NotificationSuppressMapTextInput;
-        }
-        if (Minimap.IsOpen())
-        {
-            mask |= NotificationSuppressMap;
-        }
-        if (Menu.IsVisible())
-        {
-            mask |= NotificationSuppressMenu;
-        }
-        if (InventoryGui.IsVisible())
-        {
-            mask |= NotificationSuppressInventory;
-        }
-        if (StoreGui.IsVisible())
-        {
-            mask |= NotificationSuppressStore;
-        }
-        if (UnifiedPopup.IsVisible())
-        {
-            mask |= NotificationSuppressPopup;
-        }
-        return mask;
+        return HasActionableClanNotification(snapshot) &&
+               !chatInputVisible &&
+               !panelOpen &&
+               !IsBlockingModalVisible();
     }
 
-    private static void LogStandaloneNotificationStateIfChanged(
-        ClanClientSnapshot snapshot,
-        bool inputVisible,
-        bool panelOpen,
-        int suppressionMask,
-        bool showStandalone)
+    private static bool IsBlockingModalVisible()
     {
-        bool actionable = HasActionableClanNotification(snapshot);
-        bool hasInvite = snapshot.Invite != null;
-        bool hasRoot = _root != null;
-        bool rootActiveSelf = hasRoot && _root!.activeSelf;
-        bool rootActiveInHierarchy = hasRoot && _root!.activeInHierarchy;
-        bool hasDock = _clanButtonDockRect != null;
-        bool dockActiveSelf = hasDock && _clanButtonDockRect!.gameObject.activeSelf;
-        bool dockActiveInHierarchy = hasDock &&
-                                     _clanButtonDockRect!.gameObject.activeInHierarchy;
-        bool hasBadge = _clanNotificationBadge != null;
-        bool badgeActiveSelf = hasBadge && _clanNotificationBadge!.activeSelf;
-        bool badgeActiveInHierarchy = hasBadge &&
-                                      _clanNotificationBadge!.activeInHierarchy;
-        int mask =
-            (actionable ? 1 << 0 : 0) |
-            (hasInvite ? 1 << 1 : 0) |
-            (snapshot.CanModerate ? 1 << 2 : 0) |
-            (inputVisible ? 1 << 3 : 0) |
-            (panelOpen ? 1 << 4 : 0) |
-            (showStandalone ? 1 << 5 : 0) |
-            (hasRoot ? 1 << 6 : 0) |
-            (rootActiveSelf ? 1 << 7 : 0) |
-            (rootActiveInHierarchy ? 1 << 8 : 0) |
-            (hasDock ? 1 << 9 : 0) |
-            (dockActiveSelf ? 1 << 10 : 0) |
-            (dockActiveInHierarchy ? 1 << 11 : 0) |
-            (hasBadge ? 1 << 12 : 0) |
-            (badgeActiveSelf ? 1 << 13 : 0) |
-            (badgeActiveInHierarchy ? 1 << 14 : 0) |
-            (suppressionMask << 16);
-        int rootId = hasRoot ? _root!.GetInstanceID() : 0;
-        int dockId = hasDock ? _clanButtonDockRect!.GetInstanceID() : 0;
-        bool changed =
-            mask != _lastNotificationDiagnosticMask ||
-            snapshot.Applications.Count != _lastNotificationDiagnosticApplications ||
-            rootId != _lastNotificationDiagnosticRootId ||
-            dockId != _lastNotificationDiagnosticDockId;
-        if (!changed)
-        {
-            return;
-        }
-
-        bool previousActionable =
-            _lastNotificationDiagnosticMask != int.MinValue &&
-            (_lastNotificationDiagnosticMask & (1 << 0)) != 0;
-        _lastNotificationDiagnosticMask = mask;
-        _lastNotificationDiagnosticApplications = snapshot.Applications.Count;
-        _lastNotificationDiagnosticRootId = rootId;
-        _lastNotificationDiagnosticDockId = dockId;
-        if (!actionable && !previousActionable)
-        {
-            _notificationPositionDiagnosticInitialized = false;
-            return;
-        }
-
-        if (!actionable)
-        {
-            _notificationPositionDiagnosticInitialized = false;
-        }
-
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Clan alert state frame={Time.frameCount}; " +
-            $"actionable={actionable}; invite={hasInvite}; " +
-            $"canModerate={snapshot.CanModerate}; " +
-            $"applications={snapshot.Applications.Count}; " +
-            $"inputVisible={inputVisible}; panelOpen={panelOpen}; " +
-            $"showStandalone={showStandalone}; suppression={suppressionMask}; " +
-            $"console={(suppressionMask & NotificationSuppressConsole) != 0}; " +
-            $"textInput={(suppressionMask & NotificationSuppressTextInput) != 0}; " +
-            $"mapText={(suppressionMask & NotificationSuppressMapTextInput) != 0}; " +
-            $"map={(suppressionMask & NotificationSuppressMap) != 0}; " +
-            $"menu={(suppressionMask & NotificationSuppressMenu) != 0}; " +
-            $"inventory={(suppressionMask & NotificationSuppressInventory) != 0}; " +
-            $"store={(suppressionMask & NotificationSuppressStore) != 0}; " +
-            $"popup={(suppressionMask & NotificationSuppressPopup) != 0}; " +
-            $"rootId={rootId}; rootActiveSelf={rootActiveSelf}; " +
-            $"rootActiveHierarchy={rootActiveInHierarchy}; " +
-            $"dockId={dockId}; dockActiveSelf={dockActiveSelf}; " +
-            $"dockActiveHierarchy={dockActiveInHierarchy}; " +
-            $"badgeActiveSelf={badgeActiveSelf}; " +
-            $"badgeActiveHierarchy={badgeActiveInHierarchy}.");
+        return Console.IsVisible() ||
+               TextInput.IsVisible() ||
+               Minimap.InTextInput() ||
+               Minimap.IsOpen() ||
+               Menu.IsVisible() ||
+               InventoryGui.IsVisible() ||
+               StoreGui.IsVisible() ||
+               UnifiedPopup.IsVisible();
     }
 
     private static void SetClanButtonDockVisibility(
@@ -935,23 +859,25 @@ internal static class ClanVanillaChatDock
         _emojiButtonDockRect = BuildRailButtonDock(
             parent,
             "ClanDockEmoji",
-            "Emoji",
+            ClanLocalization.Text("chat_button_emoji"),
             ToggleEmojiTray,
             out _emojiTrayButton);
+        RefreshEmojiPanelTooltip();
         _clanButtonDockRect = BuildRailButtonDock(
             persistentParent,
             "ClanDockClan",
-            "Clan",
+            ClanLocalization.Text("chat_button_clan"),
             ToggleClanPanelFromDock,
             out _clanPanelButton);
+        _clanPanelButtonLabel =
+            _clanPanelButton.GetComponentInChildren<Text>(includeInactive: true);
         _clanButtonDockCanvasGroup =
             _clanButtonDockRect.gameObject.AddComponent<CanvasGroup>();
-        BuildClanNotificationBadge(_clanButtonDockRect);
         RefreshClanPanelTooltip();
         _chatViewDockRect = BuildRailButtonDock(
             parent,
             "ClanDockViewFilter",
-            GetChatViewLabel(),
+            GetChatViewPresentation().Label,
             CycleChatViewMode,
             out _chatViewButton);
         RefreshChatViewButton(refreshTooltip: true);
@@ -982,34 +908,23 @@ internal static class ClanVanillaChatDock
         fitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
         fitter.verticalFit = ContentSizeFitter.FitMode.Unconstrained;
 
-        AddChannelButton(dock.transform, Channel.Shout, "Shout", ShoutButtonWidth);
-        AddChannelButton(dock.transform, Channel.Clan, "Clan chat", ClanChatButtonWidth);
+        AddChannelButton(
+            dock.transform,
+            Channel.Shout,
+            ClanLocalization.Text("chat_channel_shout"),
+            ShoutButtonWidth);
+        AddChannelButton(
+            dock.transform,
+            Channel.Clan,
+            ClanLocalization.Text("chat_channel_clan"),
+            ClanChatButtonWidth);
         _whisperButton = AddChannelButton(
             dock.transform,
             Channel.Whisper,
-            "Whisper",
+            ClanLocalization.Text("chat_channel_whisper"),
             WhisperButtonWidth);
         _whisperButton.gameObject.SetActive(ClanPlugin.ShowWhisperChatButton.Value.IsOn());
         LayoutRebuilder.ForceRebuildLayoutImmediate(rect);
-    }
-
-    private static void BuildClanNotificationBadge(Transform parent)
-    {
-        Text badge = CreateLabel(parent, "!", 18, TextAnchor.MiddleCenter);
-        badge.name = "ClanNotificationBadge";
-        badge.color = NotificationBadgeColor;
-        badge.raycastTarget = false;
-        RectTransform rect = badge.GetComponent<RectTransform>();
-        rect.anchorMin = new Vector2(0f, 0.5f);
-        rect.anchorMax = new Vector2(0f, 0.5f);
-        rect.pivot = new Vector2(0f, 0.5f);
-        rect.anchoredPosition = new Vector2(5f, 0f);
-        rect.sizeDelta = new Vector2(12f, 24f);
-
-        LayoutElement element = badge.gameObject.AddComponent<LayoutElement>();
-        element.ignoreLayout = true;
-        _clanNotificationBadge = badge.gameObject;
-        _clanNotificationBadge.SetActive(false);
     }
 
     private static RectTransform BuildRailButtonDock(
@@ -1074,12 +989,12 @@ internal static class ClanVanillaChatDock
 
         _resetSpawnButton = AddCommandButton(
             dock.transform,
-            "Reset spawn",
+            ClanLocalization.Text("chat_command_reset_spawn"),
             CommandAction.ResetSpawn,
             ResetSpawnButtonWidth);
         _dieButton = AddCommandButton(
             dock.transform,
-            "Die",
+            ClanLocalization.Text("chat_command_die"),
             CommandAction.Die,
             DieButtonWidth);
         RefreshConfiguredCommandVisibility();
@@ -1356,6 +1271,111 @@ internal static class ClanVanillaChatDock
             new Vector2(horizontalPoint, bottom));
     }
 
+    private static void PlaceStandaloneClanNotification(RectTransform rootRect)
+    {
+        RectTransform? clanDock = _clanButtonDockRect;
+        if (clanDock == null)
+        {
+            return;
+        }
+
+        if (TryPlaceCachedClanDockNotification(clanDock, rootRect))
+        {
+            return;
+        }
+
+        ApplyClanDockScale(GetConfiguredChatScale());
+        clanDock.pivot = new Vector2(0.5f, 0.5f);
+        PlaceAtScreenPoint(
+            clanDock,
+            rootRect,
+            GetSafeArea().center);
+    }
+
+    private static bool TryPlaceCachedClanDockNotification(
+        RectTransform clanDock,
+        RectTransform rootRect)
+    {
+        Rect safeArea = GetSafeArea();
+        TMP_InputField? input = GetInputField();
+        int chatId = Chat.instance != null ? Chat.instance.GetInstanceID() : 0;
+        int inputId = input != null ? input.GetInstanceID() : 0;
+        bool environmentMatches =
+            _clanDockCacheScreenWidth == Screen.width &&
+            _clanDockCacheScreenHeight == Screen.height &&
+            Approximately(_clanDockCacheSafeArea, safeArea) &&
+            Mathf.Approximately(
+                _clanDockCacheConfiguredScale,
+                GetConfiguredChatScale()) &&
+            _clanDockCacheChatId == chatId &&
+            _clanDockCacheInputId == inputId;
+        if (!_hasCachedClanDockPlacement)
+        {
+            return false;
+        }
+        if (!environmentMatches ||
+            !IsFinite(_cachedClanDockScreenPoint.x) ||
+            !IsFinite(_cachedClanDockScreenPoint.y) ||
+            !IsFinitePositive(_cachedClanDockLocalScale.x) ||
+            !IsFinitePositive(_cachedClanDockLocalScale.y) ||
+            !IsFinitePositive(_cachedClanDockLocalScale.z))
+        {
+            ResetClanDockPlacementCache();
+            return false;
+        }
+
+        SetDockScale(clanDock, _cachedClanDockLocalScale);
+        clanDock.pivot = _cachedClanDockPivot;
+        PlaceAtScreenPoint(
+            clanDock,
+            rootRect,
+            _cachedClanDockScreenPoint);
+        return true;
+    }
+
+    private static void CacheClanDockPlacement()
+    {
+        RectTransform? clanDock = _clanButtonDockRect;
+        TMP_InputField? input = GetInputField();
+        if (clanDock == null || input == null || Chat.instance == null)
+        {
+            return;
+        }
+
+        Vector2 screenPoint = RectTransformUtility.WorldToScreenPoint(
+            null,
+            clanDock.position);
+        if (!IsFinite(screenPoint.x) || !IsFinite(screenPoint.y))
+        {
+            return;
+        }
+
+        _hasCachedClanDockPlacement = true;
+        _cachedClanDockScreenPoint = screenPoint;
+        _cachedClanDockPivot = clanDock.pivot;
+        _cachedClanDockLocalScale = clanDock.localScale;
+        _clanDockCacheScreenWidth = Screen.width;
+        _clanDockCacheScreenHeight = Screen.height;
+        _clanDockCacheSafeArea = GetSafeArea();
+        _clanDockCacheConfiguredScale = GetConfiguredChatScale();
+        _clanDockCacheChatId = Chat.instance.GetInstanceID();
+        _clanDockCacheInputId = input.GetInstanceID();
+    }
+
+    private static void ResetClanDockPlacementCache()
+    {
+        _hasCachedClanDockPlacement = false;
+        _cachedClanDockScreenPoint = default;
+        _cachedClanDockPivot = default;
+        _cachedClanDockLocalScale = Vector3.one;
+        _clanDockCacheScreenWidth = 0;
+        _clanDockCacheScreenHeight = 0;
+        _clanDockCacheSafeArea = default;
+        _clanDockCacheConfiguredScale = 0f;
+        _clanDockCacheChatId = 0;
+        _clanDockCacheInputId = 0;
+    }
+
     private static void SetEmojiTrayVisibleRows(int rowCount)
     {
         if (_emojiTrayRect == null)
@@ -1383,9 +1403,7 @@ internal static class ClanVanillaChatDock
             screenPoint,
             null,
             out Vector2 localPoint);
-        rect.anchoredPosition = localPoint + new Vector2(
-            ClanPlugin.ClanChatDockChannelOffsetX.Value,
-            ClanPlugin.ClanChatDockChannelOffsetY.Value);
+        rect.anchoredPosition = localPoint;
     }
 
     private static void BuildEmojiTray(Transform parent)
@@ -1446,8 +1464,7 @@ internal static class ClanVanillaChatDock
         scrollRect.viewport = viewportRect;
         scrollRect.horizontal = false;
         scrollRect.vertical = true;
-        scrollRect.movementType = ScrollRect.MovementType.Clamped;
-        scrollRect.scrollSensitivity = ScrollSensitivity;
+        ClanUiFactory.ConfigureVerticalScroll(scrollRect, hasOverflow: true);
 
         GameObject scrollbarObject = ClanUiFactory.CreateObject(
             "Scrollbar",
@@ -1543,7 +1560,7 @@ internal static class ClanVanillaChatDock
 
                 Text badgeLabel = CreateLabel(
                     badgeObject.transform,
-                    "GIF",
+                    ClanLocalization.Text("chat_emoji_gif_badge"),
                     9,
                     TextAnchor.MiddleCenter);
                 badgeLabel.raycastTarget = false;
@@ -1580,24 +1597,7 @@ internal static class ClanVanillaChatDock
             0f,
             _emojiTrayRect.sizeDelta.y - EmojiTrayPadding * 2f);
         bool hasOverflow = contentHeight > viewportHeight + ScrollOverflowEpsilon;
-        ScrollRect.MovementType movementType = hasOverflow
-            ? ScrollRect.MovementType.Clamped
-            : ScrollRect.MovementType.Elastic;
-        bool movementTypeChanged = scroll.movementType != movementType;
-        scroll.movementType = movementType;
-        scroll.scrollSensitivity = hasOverflow
-            ? ScrollSensitivity
-            : UnderfilledScrollSensitivity;
-        scroll.elasticity = UnderfilledScrollElasticity;
-
-        if (movementTypeChanged)
-        {
-            scroll.StopMovement();
-            if (!hasOverflow)
-            {
-                _emojiContent.anchoredPosition = Vector2.zero;
-            }
-        }
+        ClanUiFactory.ConfigureVerticalScroll(scroll, hasOverflow, _emojiContent);
     }
 
     private static Button AddRailButton(
@@ -1622,14 +1622,22 @@ internal static class ClanVanillaChatDock
         return !input.isFocused &&
                !HasPendingChatRefocus(chat) &&
                !ClanPanelController.OwnsFocusedTextInput &&
-               !Console.IsVisible() &&
-               !TextInput.IsVisible() &&
-               !Minimap.InTextInput() &&
-               !Minimap.IsOpen() &&
-               !Menu.IsVisible() &&
-               !InventoryGui.IsVisible() &&
-               !StoreGui.IsVisible() &&
-               !UnifiedPopup.IsVisible();
+               !IsBlockingModalVisible();
+    }
+
+    private static bool ShouldOpenEmojiTrayFromShortcut(
+        Chat chat,
+        TMP_InputField input)
+    {
+        if (!ClanPlugin.EmojiPanelShortcut.Value.IsKeyDown())
+        {
+            return false;
+        }
+
+        return !input.isFocused &&
+               !HasPendingChatRefocus(chat) &&
+               !ClanPanelController.OwnsFocusedTextInput &&
+               !IsBlockingModalVisible();
     }
 
     private static bool TryHandleClanPanelCancel()
@@ -1637,13 +1645,7 @@ internal static class ClanVanillaChatDock
         if (!ClanPanelController.IsOpen ||
             (!ZInput.GetKeyDown(KeyCode.Escape) &&
              !ZInput.GetButtonDown("JoyButtonB")) ||
-            Console.IsVisible() ||
-            TextInput.IsVisible() ||
-            Minimap.InTextInput() ||
-            Menu.IsVisible() ||
-            InventoryGui.IsVisible() ||
-            StoreGui.IsVisible() ||
-            UnifiedPopup.IsVisible())
+            IsBlockingModalVisible())
         {
             return false;
         }
@@ -1676,7 +1678,7 @@ internal static class ClanVanillaChatDock
                 _keepChatVisibleForClanPanel = false;
                 return;
             }
-            ClanRpc.RequestSnapshot("panel-open");
+            ClanRpc.RequestSnapshot();
             ClanRpc.RequestDirectory();
         }
         else
@@ -1689,7 +1691,7 @@ internal static class ClanVanillaChatDock
     {
         if (!ClanEmoji.IsReady)
         {
-            ClanRpc.NotifyStatus("Chat emojis are not available.");
+            ClanRpc.NotifyStatus(ClanLocalization.Text("chat_emoji_unavailable"));
             return;
         }
 
@@ -1700,6 +1702,44 @@ internal static class ClanVanillaChatDock
             _emojiTray.SetActive(_emojiTrayOpen);
         }
         RefreshButtonStates();
+        RefreshEmojiPanelTooltip();
+    }
+
+    private static void OpenEmojiTrayFromShortcut(
+        Chat chat,
+        TMP_InputField input)
+    {
+        if (!_emojiTrayOpen)
+        {
+            ToggleEmojiTray();
+        }
+        if (!_emojiTrayOpen)
+        {
+            return;
+        }
+
+        EnsureChatVisible(chat, input);
+        EventSystem.current?.SetSelectedGameObject(null);
+        _emojiShortcutFocusFrame = Time.frameCount + 1;
+    }
+
+    private static void ApplyPendingEmojiShortcutFocus(TMP_InputField input)
+    {
+        if (_emojiShortcutFocusFrame < 0 ||
+            Time.frameCount < _emojiShortcutFocusFrame)
+        {
+            return;
+        }
+
+        _emojiShortcutFocusFrame = -1;
+        Chat? chat = Chat.instance;
+        if (!_emojiTrayOpen || chat == null || IsBlockingModalVisible())
+        {
+            return;
+        }
+
+        EnsureChatVisible(chat, input);
+        FocusChatInputAtEnd(input);
     }
 
     private static void BuildResizeHandle(Transform parent)
@@ -1740,7 +1780,7 @@ internal static class ClanVanillaChatDock
         ClanUiFeedback.ApplyIcon(
             button,
             ClanActionIcon.Resize,
-            "Drag diagonally to resize chat",
+            string.Empty,
             displaySize: ResizeIconSize);
     }
 
@@ -1752,25 +1792,9 @@ internal static class ClanVanillaChatDock
         }
 
         RectTransform inputRect = input.GetComponent<RectTransform>();
-        bool inputActive = inputRect.gameObject.activeInHierarchy;
-        bool refreshInactiveRects = !inputActive &&
-                                    !_hasCachedChatInputBounds &&
-                                    Time.unscaledTime >=
-                                    _nextInactiveChatRectRefreshAt;
-        if (refreshInactiveRects)
-        {
-            _nextInactiveChatRectRefreshAt =
-                Time.unscaledTime + InactiveChatRectRefreshIntervalSeconds;
-            ForceUpdateChatRectTransforms(inputRect);
-        }
         RefreshChatPanelTarget(inputRect);
-        if (refreshInactiveRects)
-        {
-            ForceUpdateChatRectTransforms(inputRect);
-        }
         Rect inputBounds = ResolveChatPlacementBounds(
             inputRect,
-            out ChatPlacementSource placementSource,
             out float dockScale);
         ApplyClanDockScale(dockScale);
         bool railPositioned = PlaceLeftRailStack(
@@ -1793,13 +1817,11 @@ internal static class ClanVanillaChatDock
         {
             PlaceCommandDock(_commandDockRect, _rootRect, inputRect);
         }
+        if (railPositioned && IsChatInputOpen(input))
+        {
+            CacheClanDockPlacement();
+        }
         ClanPanelController.RefreshPosition(_rootRect);
-        LogStandaloneNotificationPositionIfChanged(
-            input,
-            railPositioned,
-            railOnLeft,
-            railHorizontalPoint,
-            placementSource);
     }
 
     private static void RefreshChatPanelTarget(RectTransform inputRect)
@@ -1814,32 +1836,8 @@ internal static class ClanVanillaChatDock
         RefreshChatScaleTarget(target, canResize);
     }
 
-    private static void ForceUpdateChatRectTransforms(RectTransform inputRect)
-    {
-        Canvas? canvas = inputRect.GetComponentInParent<Canvas>(true);
-        if (canvas?.transform is RectTransform canvasRect)
-        {
-            canvasRect.ForceUpdateRectTransforms();
-        }
-
-        Chat? chat = Chat.instance;
-        RectTransform? declaredWindow = chat != null
-            ? ((Terminal)chat).m_chatWindow
-            : null;
-        declaredWindow?.ForceUpdateRectTransforms();
-        ResolveDeclaredChatContentRoot(inputRect, declaredWindow)?
-            .ForceUpdateRectTransforms();
-        Component? output = chat != null
-            ? ((Terminal)chat).m_output as Component
-            : null;
-        output?.GetComponent<RectTransform>()?.ForceUpdateRectTransforms();
-        inputRect.ForceUpdateRectTransforms();
-        _rootRect?.ForceUpdateRectTransforms();
-    }
-
     private static Rect ResolveChatPlacementBounds(
         RectTransform inputRect,
-        out ChatPlacementSource source,
         out float dockScale)
     {
         Rect safeArea = GetSafeArea();
@@ -1867,7 +1865,6 @@ internal static class ClanVanillaChatDock
             _hasCachedChatInputBounds = true;
             _cachedChatInputBounds = liveBounds;
             _cachedChatDockScale = dockScale;
-            source = ChatPlacementSource.Live;
             return liveBounds;
         }
 
@@ -1875,11 +1872,9 @@ internal static class ClanVanillaChatDock
             IsUsableChatPlacementBounds(_cachedChatInputBounds, safeArea))
         {
             dockScale = _cachedChatDockScale;
-            source = ChatPlacementSource.Cached;
             return _cachedChatInputBounds;
         }
 
-        source = ChatPlacementSource.Fallback;
         return BuildFallbackChatInputBounds(
             inputRect,
             canvasScaleFactor,
@@ -1976,7 +1971,7 @@ internal static class ClanVanillaChatDock
 
     private static bool IsUsableChatPlacementBounds(Rect bounds, Rect safeArea)
     {
-        if (!IsDiagnosticRectValid(bounds))
+        if (!IsFiniteNonTrivialRect(bounds))
         {
             return false;
         }
@@ -2020,7 +2015,7 @@ internal static class ClanVanillaChatDock
         _chatPlacementCacheCanvasScaleFactor = 0f;
         _chatPlacementCacheCanvasId = 0;
         _chatPlacementCacheInputId = 0;
-        _nextInactiveChatRectRefreshAt = 0f;
+        ResetClanDockPlacementCache();
     }
 
     private static bool Approximately(Rect left, Rect right)
@@ -2084,22 +2079,7 @@ internal static class ClanVanillaChatDock
 
     private static Rect GetScreenBounds(RectTransform rect)
     {
-        rect.GetWorldCorners(WorldCornersA);
-        Vector2 first = RectTransformUtility.WorldToScreenPoint(null, WorldCornersA[0]);
-        float left = first.x;
-        float right = first.x;
-        float bottom = first.y;
-        float top = first.y;
-        for (int index = 1; index < WorldCornersA.Length; index++)
-        {
-            Vector2 point = RectTransformUtility.WorldToScreenPoint(null, WorldCornersA[index]);
-            left = Mathf.Min(left, point.x);
-            right = Mathf.Max(right, point.x);
-            bottom = Mathf.Min(bottom, point.y);
-            top = Mathf.Max(top, point.y);
-        }
-
-        return Rect.MinMaxRect(left, bottom, right, top);
+        return ClanUiFactory.GetScreenBounds(rect, camera: null);
     }
 
     private static Rect GetSafeArea()
@@ -2110,155 +2090,7 @@ internal static class ClanVanillaChatDock
             : new Rect(0f, 0f, Screen.width, Screen.height);
     }
 
-    private static void LogStandaloneNotificationPositionIfChanged(
-        TMP_InputField input,
-        bool railPositioned,
-        bool railOnLeft,
-        float railHorizontalPoint,
-        ChatPlacementSource placementSource)
-    {
-        ClanClientSnapshot snapshot = ClanRpc.CurrentSnapshot;
-        bool actionable = HasActionableClanNotification(snapshot);
-        if (!actionable)
-        {
-            _notificationPositionDiagnosticInitialized = false;
-            return;
-        }
-
-        bool inputVisible = IsChatInputOpen(input);
-        int suppressionMask = GetStandaloneClanNotificationSuppressionMask();
-        bool standalone = !inputVisible &&
-                          !ClanPanelController.IsOpen &&
-                          suppressionMask == 0;
-        if (!inputVisible && !standalone)
-        {
-            return;
-        }
-
-        RectTransform inputRect = input.GetComponent<RectTransform>();
-        Rect inputBounds = GetScreenBounds(inputRect);
-        Rect dockBounds = GetDiagnosticScreenBounds(_clanButtonDockRect);
-        Rect safeArea = GetSafeArea();
-        Vector2 dockCenter = dockBounds.center;
-        bool geometryValid = IsUsableChatPlacementBounds(inputBounds, safeArea) &&
-                             IsUsableChatPlacementBounds(dockBounds, safeArea);
-        bool leftEdge = geometryValid &&
-                        dockBounds.xMin <= safeArea.xMin + 8f;
-        int panelId = _chatPanelRect != null
-            ? _chatPanelRect.GetInstanceID()
-            : 0;
-        bool moved = _notificationPositionDiagnosticInitialized &&
-                     Vector2.Distance(
-                         dockCenter,
-                         _lastNotificationDiagnosticPosition) >= 8f;
-        bool shouldLog =
-            !_notificationPositionDiagnosticInitialized ||
-            inputVisible != _lastNotificationDiagnosticInputVisible ||
-            standalone != _lastNotificationDiagnosticStandalone ||
-            leftEdge != _lastNotificationDiagnosticLeftEdge ||
-            geometryValid != _lastNotificationDiagnosticGeometryValid ||
-            panelId != _lastNotificationDiagnosticPanelId ||
-            placementSource != _lastNotificationDiagnosticPlacementSource ||
-            moved;
-        if (!shouldLog)
-        {
-            return;
-        }
-
-        _notificationPositionDiagnosticInitialized = true;
-        _lastNotificationDiagnosticPosition = dockCenter;
-        _lastNotificationDiagnosticInputVisible = inputVisible;
-        _lastNotificationDiagnosticStandalone = standalone;
-        _lastNotificationDiagnosticLeftEdge = leftEdge;
-        _lastNotificationDiagnosticGeometryValid = geometryValid;
-        _lastNotificationDiagnosticPanelId = panelId;
-        _lastNotificationDiagnosticPlacementSource = placementSource;
-
-        Chat? chat = Chat.instance;
-        RectTransform? declaredWindow = chat != null
-            ? ((Terminal)chat).m_chatWindow
-            : null;
-        Component? output = chat != null
-            ? ((Terminal)chat).m_output as Component
-            : null;
-        RectTransform? outputRect = output != null
-            ? output.GetComponent<RectTransform>()
-            : null;
-        Rect windowBounds = GetDiagnosticScreenBounds(declaredWindow);
-        Rect panelBounds = GetDiagnosticScreenBounds(_chatPanelRect);
-        Rect outputBounds = GetDiagnosticScreenBounds(outputRect);
-        Rect rootBounds = GetDiagnosticScreenBounds(_rootRect);
-        Vector2 dockAnchoredPosition = _clanButtonDockRect != null
-            ? _clanButtonDockRect.anchoredPosition
-            : Vector2.zero;
-        Vector2 dockPivot = _clanButtonDockRect != null
-            ? _clanButtonDockRect.pivot
-            : Vector2.zero;
-        Canvas? canvas = _rootRect != null
-            ? _rootRect.GetComponentInParent<Canvas>(true)
-            : null;
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Clan alert position frame={Time.frameCount}; " +
-            $"inputVisible={inputVisible}; standalone={standalone}; " +
-            $"geometryValid={geometryValid}; atSafeLeft={leftEdge}; " +
-            $"railPositioned={railPositioned}; railOnLeft={railOnLeft}; " +
-            $"railPoint={railHorizontalPoint:F1}; placement={placementSource}; " +
-            $"inputActiveSelf={input.gameObject.activeSelf}; " +
-            $"inputActiveHierarchy={input.gameObject.activeInHierarchy}; " +
-            $"input={FormatDiagnosticRect(inputBounds)}; " +
-            $"windowActiveSelf={declaredWindow != null && declaredWindow.gameObject.activeSelf}; " +
-            $"windowActiveHierarchy={declaredWindow != null && declaredWindow.gameObject.activeInHierarchy}; " +
-            $"window={FormatDiagnosticRect(windowBounds)}; " +
-            $"panelId={panelId}; panel={FormatDiagnosticRect(panelBounds)}; " +
-            $"outputActiveSelf={output != null && output.gameObject.activeSelf}; " +
-            $"outputActiveHierarchy={output != null && output.gameObject.activeInHierarchy}; " +
-            $"output={FormatDiagnosticRect(outputBounds)}; " +
-            $"dock={FormatDiagnosticRect(dockBounds)}; " +
-            $"dockAnchor=({dockAnchoredPosition.x:F1},{dockAnchoredPosition.y:F1}); " +
-            $"dockPivot=({dockPivot.x:F1},{dockPivot.y:F1}); " +
-            $"safe={FormatDiagnosticRect(safeArea)}; " +
-            $"root={FormatDiagnosticRect(rootBounds)}; " +
-            $"canvasId={(canvas != null ? canvas.GetInstanceID() : 0)}; " +
-            $"canvasMode={(canvas != null ? canvas.renderMode.ToString() : "none")}; " +
-            $"canvasScale={(canvas != null ? canvas.scaleFactor : 0f):F2}; " +
-            $"canvasCamera={canvas != null && canvas.worldCamera != null}.");
-    }
-
-    private static void LogChatDockLifecycle(
-        string action,
-        TMP_InputField? input)
-    {
-        RectTransform? inputRect = input != null
-            ? input.GetComponent<RectTransform>()
-            : null;
-        Canvas? canvas = _rootRect != null
-            ? _rootRect.GetComponentInParent<Canvas>(true)
-            : null;
-        Transform? parent = _root != null ? _root.transform.parent : null;
-        ClanPlugin.ClanLogger.LogInfo(
-            $"[Clan.Diag] Chat dock {action} frame={Time.frameCount}; " +
-            $"rootId={(_root != null ? _root.GetInstanceID() : 0)}; " +
-            $"rootActiveSelf={_root != null && _root.activeSelf}; " +
-            $"rootActiveHierarchy={_root != null && _root.activeInHierarchy}; " +
-            $"parentId={(parent != null ? parent.GetInstanceID() : 0)}; " +
-            $"parentActiveSelf={parent != null && parent.gameObject.activeSelf}; " +
-            $"parentActiveHierarchy={parent != null && parent.gameObject.activeInHierarchy}; " +
-            $"dockId={(_clanButtonDockRect != null ? _clanButtonDockRect.GetInstanceID() : 0)}; " +
-            $"panelId={(_chatPanelRect != null ? _chatPanelRect.GetInstanceID() : 0)}; " +
-            $"inputActiveSelf={input != null && input.gameObject.activeSelf}; " +
-            $"inputActiveHierarchy={input != null && input.gameObject.activeInHierarchy}; " +
-            $"input={FormatDiagnosticRect(GetDiagnosticScreenBounds(inputRect))}; " +
-            $"canvasId={(canvas != null ? canvas.GetInstanceID() : 0)}; " +
-            $"canvasMode={(canvas != null ? canvas.renderMode.ToString() : "none")}; " +
-            $"canvasScale={(canvas != null ? canvas.scaleFactor : 0f):F2}.");
-    }
-
-    private static Rect GetDiagnosticScreenBounds(RectTransform? rect)
-    {
-        return rect != null ? GetScreenBounds(rect) : default;
-    }
-
-    private static bool IsDiagnosticRectValid(Rect rect)
+    private static bool IsFiniteNonTrivialRect(Rect rect)
     {
         return rect.width > 1f &&
                rect.height > 1f &&
@@ -2266,27 +2098,6 @@ internal static class ClanVanillaChatDock
                IsFinite(rect.yMin) &&
                IsFinite(rect.xMax) &&
                IsFinite(rect.yMax);
-    }
-
-    private static string FormatDiagnosticRect(Rect rect)
-    {
-        return $"({rect.xMin:F1},{rect.yMin:F1},{rect.width:F1},{rect.height:F1})";
-    }
-
-    private static void ResetStandaloneNotificationDiagnostics()
-    {
-        _lastNotificationDiagnosticMask = int.MinValue;
-        _lastNotificationDiagnosticApplications = -1;
-        _lastNotificationDiagnosticRootId = 0;
-        _lastNotificationDiagnosticDockId = 0;
-        _notificationPositionDiagnosticInitialized = false;
-        _lastNotificationDiagnosticPosition = Vector2.zero;
-        _lastNotificationDiagnosticInputVisible = false;
-        _lastNotificationDiagnosticStandalone = false;
-        _lastNotificationDiagnosticLeftEdge = false;
-        _lastNotificationDiagnosticGeometryValid = false;
-        _lastNotificationDiagnosticPanelId = 0;
-        _lastNotificationDiagnosticPlacementSource = default;
     }
 
     private static void IncludeChatVisualRect(
@@ -2538,9 +2349,12 @@ internal static class ClanVanillaChatDock
 
     private static void CycleChatViewMode()
     {
+        bool hasClan = ClanRpc.CurrentSnapshot.HasClan;
         _chatViewMode = _chatViewMode switch
         {
-            ChatViewMode.All => ChatViewMode.Clan,
+            ChatViewMode.All => hasClan
+                ? ChatViewMode.Clan
+                : ChatViewMode.Local,
             ChatViewMode.Clan => ChatViewMode.Local,
             ChatViewMode.Local => ChatViewMode.Global,
             _ => ChatViewMode.All
@@ -2551,7 +2365,8 @@ internal static class ClanVanillaChatDock
 
     private static void RefreshChatViewButton(bool refreshTooltip)
     {
-        SetButtonLabel(_chatViewButton, GetChatViewLabel());
+        var presentation = GetChatViewPresentation();
+        SetButtonLabel(_chatViewButton, presentation.Label);
         bool filtering = _chatViewMode != ChatViewMode.All;
         SetButtonColor(
             _chatViewButton,
@@ -2561,42 +2376,36 @@ internal static class ClanVanillaChatDock
         {
             ClanUiFeedback.SetTooltip(
                 _chatViewButton,
-                GetChatViewTooltip());
+                presentation.Tooltip,
+                placement: ClanTooltipPlacement.LeftOfTarget);
+        }
+        if (_chatViewButton != null)
+        {
+            UpdatePlaceholder();
         }
     }
 
-    private static string GetChatViewLabel()
+    private static (string Label, string Tooltip, string PlaceholderSummary)
+        GetChatViewPresentation()
     {
         return _chatViewMode switch
         {
-            ChatViewMode.Clan => "Clan",
-            ChatViewMode.Local => "Local",
-            ChatViewMode.Global => "Global",
-            _ => "All"
-        };
-    }
-
-    private static string GetChatViewTooltip()
-    {
-        string visible = _chatViewMode switch
-        {
-            ChatViewMode.Clan => "Clan messages",
-            ChatViewMode.Local => "Say and Whisper messages",
-            ChatViewMode.Global => "Shout messages",
-            _ => "Say, Whisper, Shout, and Clan messages"
-        };
-        string next = GetNextChatViewModeLabel();
-        return $"View filter: {visible}. System messages are always shown. Click for {next}.";
-    }
-
-    private static string GetNextChatViewModeLabel()
-    {
-        return _chatViewMode switch
-        {
-            ChatViewMode.All => "Clan",
-            ChatViewMode.Clan => "Local",
-            ChatViewMode.Local => "Global",
-            _ => "All"
+            ChatViewMode.Clan => (
+                ClanLocalization.Text("chat_filter_clan"),
+                ClanLocalization.Text("chat_filter_tooltip_clan"),
+                ClanLocalization.Text("chat_filter_view_clan")),
+            ChatViewMode.Local => (
+                ClanLocalization.Text("chat_filter_local"),
+                ClanLocalization.Text("chat_filter_tooltip_local"),
+                ClanLocalization.Text("chat_filter_view_local")),
+            ChatViewMode.Global => (
+                ClanLocalization.Text("chat_filter_global"),
+                ClanLocalization.Text("chat_filter_tooltip_global"),
+                ClanLocalization.Text("chat_filter_view_global")),
+            _ => (
+                ClanLocalization.Text("chat_filter_all"),
+                ClanLocalization.Text("chat_filter_tooltip_all"),
+                ClanLocalization.Text("chat_filter_view_all"))
         };
     }
 
@@ -2759,8 +2568,14 @@ internal static class ClanVanillaChatDock
         bool diePending = _pendingCommand == CommandAction.Die;
         SetButtonLabel(
             _resetSpawnButton,
-            resetPending ? "Reset spawn?" : "Reset spawn");
-        SetButtonLabel(_dieButton, diePending ? "Die?" : "Die");
+            resetPending
+                ? ClanLocalization.Text("chat_command_reset_spawn_confirm")
+                : ClanLocalization.Text("chat_command_reset_spawn"));
+        SetButtonLabel(
+            _dieButton,
+            diePending
+                ? ClanLocalization.Text("chat_command_die_confirm")
+                : ClanLocalization.Text("chat_command_die"));
         SetButtonColor(
             _resetSpawnButton,
             resetPending ? ConfirmationButtonColor : ButtonColor,
@@ -2810,16 +2625,12 @@ internal static class ClanVanillaChatDock
             bool hasNotification = HasActionableClanNotification(snapshot);
             SetButtonColor(
                 _clanPanelButton,
-                active
-                    ? ActiveToggleButtonColor
-                    : hasNotification
-                        ? NotificationButtonColor
-                        : InactiveToggleButtonColor,
-                active || hasNotification ? Color.white : InactiveButtonLabelColor);
-            if (_clanNotificationBadge != null)
-            {
-                _clanNotificationBadge.SetActive(hasNotification);
-            }
+                active ? ActiveToggleButtonColor : InactiveToggleButtonColor,
+                hasNotification
+                    ? ClanUiFeedback.GetNotificationPulseColor()
+                    : active
+                        ? Color.white
+                        : InactiveButtonLabelColor);
         }
 
         if (_emojiTrayButton != null)
@@ -2845,8 +2656,30 @@ internal static class ClanVanillaChatDock
         RefreshCommandButtonStates();
     }
 
+    private static void RefreshClanNotificationPulse(ClanClientSnapshot snapshot)
+    {
+        if (_clanPanelButton == null || _clanPanelButtonLabel == null)
+        {
+            return;
+        }
+
+        bool active = ClanPanelController.IsOpen;
+        _clanPanelButtonLabel.color = HasActionableClanNotification(snapshot)
+            ? ClanUiFeedback.GetNotificationPulseColor()
+            : active
+                ? Color.white
+                : InactiveButtonLabelColor;
+    }
+
     private static void NormalizeUiState(ClanClientSnapshot snapshot)
     {
+        if (!snapshot.HasClan && _chatViewMode == ChatViewMode.Clan)
+        {
+            _chatViewMode = ChatViewMode.All;
+            RefreshChatViewButton(refreshTooltip: true);
+            RefreshChatViewOutput(resetScroll: true);
+        }
+
         if (!snapshot.HasClan && _activeChannel == Channel.Clan)
         {
             _activeChannel = Channel.Say;
@@ -2985,14 +2818,18 @@ internal static class ClanVanillaChatDock
         TMP_InputField? input = GetInputField();
         if (input?.placeholder is TMP_Text placeholder)
         {
-            placeholder.text = _activeChannel switch
+            string channelPlaceholder = _activeChannel switch
             {
-                Channel.Say => "Say nearby",
-                Channel.Shout => "Shout",
-                Channel.Whisper => "Whisper nearby",
-                Channel.Clan => "Clan message",
-                _ => "Message"
+                Channel.Say => ClanLocalization.Text("chat_placeholder_say"),
+                Channel.Shout => ClanLocalization.Text("chat_placeholder_shout"),
+                Channel.Whisper => ClanLocalization.Text("chat_placeholder_whisper"),
+                Channel.Clan => ClanLocalization.Text("chat_placeholder_clan"),
+                _ => ClanLocalization.Text("chat_placeholder_default")
             };
+            placeholder.text = ClanLocalization.Format(
+                "chat_placeholder_with_filter",
+                channelPlaceholder,
+                GetChatViewPresentation().PlaceholderSummary);
         }
     }
 
@@ -3042,14 +2879,7 @@ internal static class ClanVanillaChatDock
 
     private static void DisableDockForUnsupportedChat(Chat chat)
     {
-        if (HasDockState())
-        {
-            DestroyRoot();
-        }
-        else
-        {
-            CancelPendingChatRefocus();
-        }
+        DestroyRoot();
 
         if (ReferenceEquals(_unsupportedChatWarningOwner, chat))
         {
@@ -3057,10 +2887,7 @@ internal static class ClanVanillaChatDock
         }
 
         _unsupportedChatWarningOwner = chat;
-        const string warning =
-            "Unsupported replacement chat UI is active. Disable Chatter " +
-            "(_Global.isModEnabled=false) or Marketplace KGChat " +
-            "(EnableKGChat=false). Restart the client after disabling KGChat.";
+        string warning = ClanLocalization.Text("chat_replacement_unsupported");
         ClanPlugin.ClanLogger.LogWarning(warning);
         ClanRpc.NotifyStatus(warning);
     }
@@ -3098,11 +2925,52 @@ internal static class ClanVanillaChatDock
         RefreshClanPanelTooltip();
     }
 
-    private static void OnClanPanelShortcutChanged(object sender, EventArgs args)
+    private static void OnPanelShortcutChanged(object sender, EventArgs args)
     {
         _ = sender;
         _ = args;
         RefreshClanPanelTooltip();
+        RefreshEmojiPanelTooltip();
+    }
+
+    private static void RefreshEmojiPanelTooltip()
+    {
+        if (_emojiTrayButton == null)
+        {
+            return;
+        }
+
+        if (_emojiTrayOpen)
+        {
+            ClanUiFeedback.SetTooltip(
+                _emojiTrayButton,
+                ClanLocalization.Text("emoji_panel_tooltip_click_close"),
+                placement: ClanTooltipPlacement.LeftOfTarget);
+            return;
+        }
+
+        var shortcut = ClanPlugin.EmojiPanelShortcut.Value;
+        if (shortcut.MainKey == KeyCode.None)
+        {
+            ClanUiFeedback.SetTooltip(
+                _emojiTrayButton,
+                ClanLocalization.Text("emoji_panel_tooltip_click_open"),
+                placement: ClanTooltipPlacement.LeftOfTarget);
+            return;
+        }
+
+        string shortcutLabel = shortcut.ToString();
+        if (string.IsNullOrWhiteSpace(shortcutLabel))
+        {
+            shortcutLabel = shortcut.MainKey.ToString();
+        }
+        ClanUiFeedback.SetTooltip(
+            _emojiTrayButton,
+            ClanLocalization.Format(
+                "emoji_panel_tooltip_press_open",
+                shortcutLabel),
+            richText: true,
+            placement: ClanTooltipPlacement.LeftOfTarget);
     }
 
     private static void RefreshClanPanelTooltip()
@@ -3113,12 +2981,16 @@ internal static class ClanVanillaChatDock
         }
 
         var shortcut = ClanPlugin.ClanPanelShortcut.Value;
-        string action = ClanPanelController.IsOpen ? "close" : "open";
+        bool closing = ClanPanelController.IsOpen;
         if (shortcut.MainKey == KeyCode.None)
         {
             ClanUiFeedback.SetTooltip(
                 _clanPanelButton,
-                $"Click to {action} Clan panel");
+                ClanLocalization.Text(
+                    closing
+                        ? "clan_panel_tooltip_click_close"
+                        : "clan_panel_tooltip_click_open"),
+                placement: ClanTooltipPlacement.LeftOfTarget);
             return;
         }
 
@@ -3129,8 +3001,13 @@ internal static class ClanVanillaChatDock
         }
         ClanUiFeedback.SetTooltip(
             _clanPanelButton,
-            $"Press <color=orange>{shortcutLabel}</color> to {action} Clan panel",
-            richText: true);
+            ClanLocalization.Format(
+                closing
+                    ? "clan_panel_tooltip_press_close"
+                    : "clan_panel_tooltip_press_open",
+                shortcutLabel),
+            richText: true,
+            placement: ClanTooltipPlacement.LeftOfTarget);
     }
 
     private static void OnStatusReceived(string status)
@@ -3162,7 +3039,8 @@ internal static class ClanVanillaChatDock
         ChatLineKindScope scope = PushChatLineKind(kind);
         try
         {
-            ((Terminal)chat).AddString($"<color=#66d9c8>[Clan]</color> {message}");
+            ((Terminal)chat).AddString(
+                $"<color=#66d9c8>[{ClanLocalization.Text("chat_clan_tag")}]</color> {message}");
         }
         finally
         {
@@ -3461,7 +3339,7 @@ internal static class ClanVanillaChatDock
         label.fontSize = fontSize;
         label.alignment = alignment;
         label.color = Color.white;
-        label.font = GetFont(bold: true);
+        label.font = ClanUiFactory.GetBoldFont();
         label.supportRichText = true;
         label.horizontalOverflow = HorizontalWrapMode.Wrap;
         label.verticalOverflow = VerticalWrapMode.Truncate;
@@ -3606,7 +3484,9 @@ internal static class ClanVanillaChatDock
         if (ClanEmoji.CountMessageEmojiTokens(input.text) >= ClanEmoji.MessageEmojiLimit)
         {
             ClanRpc.NotifyStatus(
-                $"Chat messages can contain up to {ClanEmoji.MessageEmojiLimit} emojis.");
+                ClanLocalization.Format(
+                    "chat_emoji_limit",
+                    ClanEmoji.MessageEmojiLimit));
             return;
         }
 
@@ -3617,7 +3497,8 @@ internal static class ClanVanillaChatDock
         }
         if (input.text.Length > effectiveLimit - addition.Length)
         {
-            ClanRpc.NotifyStatus($"Chat messages are limited to {effectiveLimit} characters.");
+            ClanRpc.NotifyStatus(
+                ClanLocalization.Format("chat_character_limit", effectiveLimit));
             return;
         }
 
@@ -3689,11 +3570,7 @@ internal static class ClanVanillaChatDock
             ClanPanelController.OwnsSelectedControl ||
             ZInput.GetKeyDown(KeyCode.Escape) ||
             ZInput.GetButtonDown("JoyButtonB") ||
-            Console.IsVisible() ||
-            TextInput.IsVisible() ||
-            Minimap.InTextInput() ||
-            Menu.IsVisible() ||
-            InventoryGui.IsVisible())
+            IsBlockingModalVisible())
         {
             CancelPendingChatRefocus();
             return;
@@ -3911,7 +3788,7 @@ internal static class ClanVanillaChatDock
     private static void SetButtonColor(
         Button? button,
         Color color,
-        Color? labelColor = null)
+        Color labelColor)
     {
         if (button == null)
         {
@@ -3937,16 +3814,16 @@ internal static class ClanVanillaChatDock
         colors.fadeDuration = 0.1f;
         button.colors = colors;
 
-        if (!labelColor.HasValue)
-        {
-            return;
-        }
+        SetButtonLabelColor(button, labelColor);
+    }
 
+    private static void SetButtonLabelColor(Button button, Color color)
+    {
         foreach (Text label in button.GetComponentsInChildren<Text>(includeInactive: true))
         {
             if (label.transform.parent == button.transform)
             {
-                label.color = labelColor.Value;
+                label.color = color;
             }
         }
     }
@@ -3956,18 +3833,6 @@ internal static class ClanVanillaChatDock
         LayoutElement element = gameObject.GetComponent<LayoutElement>() ?? gameObject.AddComponent<LayoutElement>();
         element.preferredHeight = height;
         element.minHeight = height;
-    }
-
-    private static Font GetFont(bool bold)
-    {
-        try
-        {
-            return bold ? GUIManager.Instance.AveriaSerifBold : GUIManager.Instance.AveriaSerif;
-        }
-        catch (Exception)
-        {
-            return Resources.GetBuiltinResource<Font>("Arial.ttf");
-        }
     }
 
     private static void TryApplyButtonStyle(Button button)
@@ -3981,45 +3846,33 @@ internal static class ClanVanillaChatDock
         }
     }
 
-    [HarmonyPatch(
-        typeof(Terminal),
-        nameof(Terminal.AddString),
-        new[]
-        {
-            typeof(PlatformUserID),
-            typeof(string),
-            typeof(Talker.Type),
-            typeof(bool)
-        })]
-    private static class PlatformChatLineKindPatch
+    [HarmonyPatch]
+    private static class ChatLineKindPatch
     {
-        [HarmonyPriority(Priority.First)]
-        private static void Prefix(Talker.Type type, out ChatLineKindScope __state)
+        private static IEnumerable<MethodBase> TargetMethods()
         {
-            __state = PushChatLineKind(type);
+            yield return AccessTools.Method(
+                typeof(Terminal),
+                nameof(Terminal.AddString),
+                new[]
+                {
+                    typeof(PlatformUserID),
+                    typeof(string),
+                    typeof(Talker.Type),
+                    typeof(bool)
+                })!;
+            yield return AccessTools.Method(
+                typeof(Terminal),
+                nameof(Terminal.AddString),
+                new[]
+                {
+                    typeof(string),
+                    typeof(string),
+                    typeof(Talker.Type),
+                    typeof(bool)
+                })!;
         }
 
-        private static Exception? Finalizer(
-            Exception? __exception,
-            ChatLineKindScope __state)
-        {
-            RestoreChatLineKind(__state);
-            return __exception;
-        }
-    }
-
-    [HarmonyPatch(
-        typeof(Terminal),
-        nameof(Terminal.AddString),
-        new[]
-        {
-            typeof(string),
-            typeof(string),
-            typeof(Talker.Type),
-            typeof(bool)
-        })]
-    private static class NamedChatLineKindPatch
-    {
         [HarmonyPriority(Priority.First)]
         private static void Prefix(Talker.Type type, out ChatLineKindScope __state)
         {
@@ -4113,7 +3966,9 @@ internal static class ClanVanillaChatDock
                 !ClanEmoji.IsWithinMessageEmojiLimit(input.text))
             {
                 ClanRpc.NotifyStatus(
-                    $"Chat messages can contain up to {ClanEmoji.MessageEmojiLimit} emojis.");
+                    ClanLocalization.Format(
+                        "chat_emoji_limit",
+                        ClanEmoji.MessageEmojiLimit));
                 return false;
             }
 
@@ -4184,16 +4039,40 @@ internal static class ClanVanillaChatDock
     private static class GameCameraCursorPatch
     {
         [HarmonyPriority(Priority.First)]
-        private static void Prefix(out bool __state)
+        private static void Prefix(
+            ref bool ___m_mouseCapture,
+            out MouseCapturePatchState __state)
         {
-            // Capture the request before vanilla locks and hides the cursor.
-            __state = ShouldReleaseMouseCursor();
+            bool releaseRequested = ShouldReleaseMouseCursor();
+            __state = new MouseCapturePatchState(
+                releaseRequested,
+                ___m_mouseCapture);
+            if (releaseRequested)
+            {
+                // Enter chat is not one of vanilla's release conditions. Force
+                // this call through vanilla's release branch so the pointer is
+                // never hidden and immediately shown again within one frame.
+                ___m_mouseCapture = false;
+            }
         }
 
         [HarmonyPriority(Priority.Last)]
-        private static void Postfix(bool __state)
+        private static void Postfix(
+            ref bool ___m_mouseCapture,
+            MouseCapturePatchState __state)
         {
-            if (!__state && !ShouldReleaseMouseCursor())
+            if (__state.ReleaseRequested)
+            {
+                // Starting the original call from false exposes its Ctrl+F1
+                // capture toggle as true. Apply that toggle to the saved value,
+                // then restore the persistent preference.
+                bool captureWasToggled = ___m_mouseCapture;
+                ___m_mouseCapture = captureWasToggled
+                    ? !__state.OriginalMouseCapture
+                    : __state.OriginalMouseCapture;
+            }
+
+            if (!__state.ReleaseRequested && !ShouldReleaseMouseCursor())
             {
                 return;
             }
@@ -4206,6 +4085,19 @@ internal static class ClanVanillaChatDock
             {
                 Cursor.visible = true;
             }
+        }
+
+        private static Exception? Finalizer(
+            ref bool ___m_mouseCapture,
+            MouseCapturePatchState __state,
+            Exception? __exception)
+        {
+            if (__exception != null && __state.ReleaseRequested)
+            {
+                ___m_mouseCapture = __state.OriginalMouseCapture;
+            }
+
+            return __exception;
         }
     }
 

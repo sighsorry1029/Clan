@@ -11,11 +11,18 @@ namespace Clan;
 internal enum ClanActionIcon
 {
     Edit,
+    Folder,
     Resize,
     Collapse,
     Expand,
     Accept,
     Decline
+}
+
+internal enum ClanTooltipPlacement
+{
+    Default,
+    LeftOfTarget
 }
 
 /// <summary>
@@ -32,6 +39,7 @@ internal static class ClanUiFeedback
     private const float TooltipVerticalPadding = 5f;
     private const float TooltipMaximumTextWidth = 320f;
     private const float TooltipMaximumHeight = 160f;
+    private const float NotificationPulsePeriodSeconds = 1f;
     private const string IconObjectName = "ClanActionIcon";
 
     private static readonly Dictionary<ClanActionIcon, IconAsset> IconAssets = new();
@@ -44,15 +52,23 @@ internal static class ClanUiFeedback
     private static Canvas? _tooltipCanvas;
     private static TooltipTrigger? _tooltipOwner;
 
+    internal static Color GetNotificationPulseColor()
+    {
+        float phase = Mathf.Repeat(
+            Time.unscaledTime,
+            NotificationPulsePeriodSeconds) / NotificationPulsePeriodSeconds;
+        float blend = 0.5f - 0.5f * Mathf.Cos(phase * Mathf.PI * 2f);
+        return Color.Lerp(Color.white, ClanUiFactory.GetClanColor(), blend);
+    }
+
     /// <summary>
     /// Applies a generated icon to a button without replacing its target graphic.
-    /// Set <paramref name="clearButtonText"/> when the button is icon-only.
+    /// Button text is cleared because generated icons are used only on icon buttons.
     /// </summary>
     internal static Image ApplyIcon(
         Button button,
         ClanActionIcon icon,
         string tooltip,
-        bool clearButtonText = true,
         float displaySize = IconPixels)
     {
         if (button == null)
@@ -60,16 +76,13 @@ internal static class ClanUiFeedback
             throw new ArgumentNullException(nameof(button));
         }
 
-        if (clearButtonText)
+        foreach (Text label in button.GetComponentsInChildren<Text>(includeInactive: true))
         {
-            foreach (Text label in button.GetComponentsInChildren<Text>(includeInactive: true))
-            {
-                label.text = "";
-            }
-            foreach (TMP_Text label in button.GetComponentsInChildren<TMP_Text>(includeInactive: true))
-            {
-                label.text = "";
-            }
+            label.text = "";
+        }
+        foreach (TMP_Text label in button.GetComponentsInChildren<TMP_Text>(includeInactive: true))
+        {
+            label.text = "";
         }
 
         Transform? existing = button.transform.Find(IconObjectName);
@@ -117,8 +130,8 @@ internal static class ClanUiFeedback
     internal static void SetTooltip(
         Selectable selectable,
         string tooltip,
-        bool preferTargetHierarchy = false,
-        bool richText = false)
+        bool richText = false,
+        ClanTooltipPlacement placement = ClanTooltipPlacement.Default)
     {
         if (selectable == null)
         {
@@ -127,7 +140,7 @@ internal static class ClanUiFeedback
 
         TooltipTrigger trigger = selectable.GetComponent<TooltipTrigger>() ??
                                  selectable.gameObject.AddComponent<TooltipTrigger>();
-        trigger.Configure(selectable, tooltip, preferTargetHierarchy, richText);
+        trigger.Configure(selectable, tooltip, richText, placement);
     }
 
     internal static Sprite GetIcon(ClanActionIcon icon)
@@ -194,12 +207,12 @@ internal static class ClanUiFeedback
         string value,
         bool usePointerPosition,
         Vector2 pointerPosition,
-        bool preferTargetHierarchy,
-        bool richText)
+        bool richText,
+        ClanTooltipPlacement placement)
     {
         if (target == null ||
             string.IsNullOrWhiteSpace(value) ||
-            !EnsureTooltip(target, preferTargetHierarchy))
+            !EnsureTooltip(target))
         {
             return false;
         }
@@ -216,11 +229,77 @@ internal static class ClanUiFeedback
         _tooltipRoot!.SetActive(true);
         _tooltipRoot.transform.SetAsLastSibling();
 
+        if (placement == ClanTooltipPlacement.LeftOfTarget &&
+            TryPlaceTooltipBesideTarget(target))
+        {
+            return true;
+        }
+
+        _tooltipRect!.pivot = new Vector2(0f, 1f);
         Vector2 anchor = usePointerPosition
             ? pointerPosition + new Vector2(TooltipPointerOffset, -TooltipPointerOffset)
             : GetSelectionAnchor(target);
         PlaceAndClampTooltip(anchor);
         return true;
+    }
+
+    private static bool TryPlaceTooltipBesideTarget(Selectable target)
+    {
+        if (target.transform is not RectTransform targetRect ||
+            _tooltipRect == null)
+        {
+            return false;
+        }
+
+        targetRect.GetWorldCorners(TooltipWorldCorners);
+        Canvas? targetCanvas = target.GetComponentInParent<Canvas>();
+        Camera? targetCamera = ClanUiFactory.GetCanvasCamera(targetCanvas);
+        Vector2 bottomLeft = RectTransformUtility.WorldToScreenPoint(
+            targetCamera,
+            TooltipWorldCorners[0]);
+        Vector2 topLeft = RectTransformUtility.WorldToScreenPoint(
+            targetCamera,
+            TooltipWorldCorners[1]);
+        Vector2 topRight = RectTransformUtility.WorldToScreenPoint(
+            targetCamera,
+            TooltipWorldCorners[2]);
+        Vector2 bottomRight = RectTransformUtility.WorldToScreenPoint(
+            targetCamera,
+            TooltipWorldCorners[3]);
+        Vector2 leftCenter = (bottomLeft + topLeft) * 0.5f;
+        Vector2 rightCenter = (bottomRight + topRight) * 0.5f;
+
+        _tooltipRect.pivot = new Vector2(1f, 0.5f);
+        Vector2 leftAnchor = leftCenter + Vector2.left * TooltipPointerOffset;
+        SetTooltipScreenPosition(leftAnchor);
+        Canvas.ForceUpdateCanvases();
+        if (IsTooltipInsideHorizontalSafeArea())
+        {
+            PlaceAndClampTooltip(leftAnchor);
+            return true;
+        }
+
+        _tooltipRect.pivot = new Vector2(0f, 0.5f);
+        PlaceAndClampTooltip(
+            rightCenter + Vector2.right * TooltipPointerOffset);
+        return true;
+    }
+
+    private static bool IsTooltipInsideHorizontalSafeArea()
+    {
+        _tooltipRect!.GetWorldCorners(TooltipWorldCorners);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(_tooltipCanvas);
+        Vector2 lowerLeft = RectTransformUtility.WorldToScreenPoint(
+            camera,
+            TooltipWorldCorners[0]);
+        Vector2 upperRight = RectTransformUtility.WorldToScreenPoint(
+            camera,
+            TooltipWorldCorners[2]);
+        float minimumX = Mathf.Min(lowerLeft.x, upperRight.x);
+        float maximumX = Mathf.Max(lowerLeft.x, upperRight.x);
+        Rect safeArea = GetSafeArea();
+        return minimumX >= safeArea.xMin + TooltipScreenGap &&
+               maximumX <= safeArea.xMax - TooltipScreenGap;
     }
 
     private static void HideTooltip(TooltipTrigger owner)
@@ -243,13 +322,10 @@ internal static class ClanUiFeedback
                (_tooltipRoot == null || _tooltipRect == null || _tooltipText == null);
     }
 
-    private static bool EnsureTooltip(
-        Selectable target,
-        bool preferTargetHierarchy)
+    private static bool EnsureTooltip(Selectable target)
     {
         if (!TryResolveTooltipHost(
                 target,
-                preferTargetHierarchy,
                 out Transform host,
                 out Canvas canvas))
         {
@@ -316,7 +392,7 @@ internal static class ClanUiFeedback
         textObject.layer = root.layer;
 
         Text text = textObject.GetComponent<Text>();
-        text.font = GetFont();
+        text.font = ClanUiFactory.GetBoldFont();
         text.fontSize = 14;
         text.fontStyle = FontStyle.Normal;
         text.alignment = TextAnchor.MiddleLeft;
@@ -348,23 +424,9 @@ internal static class ClanUiFeedback
 
     private static bool TryResolveTooltipHost(
         Selectable target,
-        bool preferTargetHierarchy,
         out Transform host,
         out Canvas canvas)
     {
-        if (preferTargetHierarchy)
-        {
-            Canvas? nearestCanvas = target.GetComponentInParent<Canvas>();
-            if (nearestCanvas != null &&
-                nearestCanvas.isActiveAndEnabled &&
-                target.transform.parent is RectTransform)
-            {
-                host = target.transform.parent;
-                canvas = nearestCanvas;
-                return true;
-            }
-        }
-
         try
         {
             GameObject customFront = GUIManager.CustomGUIFront;
@@ -468,7 +530,7 @@ internal static class ClanUiFeedback
         Vector3[] corners = new Vector3[4];
         targetRect.GetWorldCorners(corners);
         Canvas? targetCanvas = target.GetComponentInParent<Canvas>();
-        Camera? camera = GetCanvasCamera(targetCanvas);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(targetCanvas);
         Vector2 topRight = RectTransformUtility.WorldToScreenPoint(camera, corners[2]);
         return topRight + new Vector2(TooltipPointerOffset, -4f);
     }
@@ -479,7 +541,7 @@ internal static class ClanUiFeedback
         Canvas.ForceUpdateCanvases();
 
         _tooltipRect!.GetWorldCorners(TooltipWorldCorners);
-        Camera? camera = GetCanvasCamera(_tooltipCanvas);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(_tooltipCanvas);
         Vector2 lowerLeft = RectTransformUtility.WorldToScreenPoint(camera, TooltipWorldCorners[0]);
         Vector2 upperRight = RectTransformUtility.WorldToScreenPoint(camera, TooltipWorldCorners[2]);
         float minimumX = Mathf.Min(lowerLeft.x, upperRight.x);
@@ -524,7 +586,7 @@ internal static class ClanUiFeedback
             return;
         }
 
-        Camera? camera = GetCanvasCamera(_tooltipCanvas);
+        Camera? camera = ClanUiFactory.GetCanvasCamera(_tooltipCanvas);
         if (RectTransformUtility.ScreenPointToLocalPointInRectangle(
                 hostRect,
                 screenPosition,
@@ -535,33 +597,12 @@ internal static class ClanUiFeedback
         }
     }
 
-    private static Camera? GetCanvasCamera(Canvas? canvas)
-    {
-        if (canvas == null || canvas.renderMode == RenderMode.ScreenSpaceOverlay)
-        {
-            return null;
-        }
-        return canvas.worldCamera;
-    }
-
     private static Rect GetSafeArea()
     {
         Rect safeArea = Screen.safeArea;
         return safeArea.width > 0f && safeArea.height > 0f
             ? safeArea
             : new Rect(0f, 0f, Screen.width, Screen.height);
-    }
-
-    private static Font GetFont()
-    {
-        try
-        {
-            return GUIManager.Instance.AveriaSerifBold;
-        }
-        catch (Exception)
-        {
-            return Resources.GetBuiltinResource<Font>("Arial.ttf");
-        }
     }
 
     private static bool IsFinitePositive(float value)
@@ -576,6 +617,7 @@ internal static class ClanUiFeedback
         Color32 foreground = icon switch
         {
             ClanActionIcon.Edit => new Color32(255, 207, 96, 255),
+            ClanActionIcon.Folder => new Color32(255, 207, 96, 255),
             ClanActionIcon.Resize => new Color32(248, 248, 244, 255),
             ClanActionIcon.Collapse => new Color32(255, 255, 255, 255),
             ClanActionIcon.Expand => new Color32(255, 255, 255, 255),
@@ -592,6 +634,10 @@ internal static class ClanUiFeedback
                 DrawLine(pixels, new Vector2(20.5f, 25.5f), new Vector2(25.5f, 20.5f), 4.5f, outline);
                 DrawLine(pixels, new Vector2(20.5f, 25.5f), new Vector2(25.5f, 20.5f), 2f, foreground);
                 DrawLine(pixels, new Vector2(5.5f, 5.5f), new Vector2(9f, 6.5f), 3f, outline);
+                break;
+
+            case ClanActionIcon.Folder:
+                DrawFolderIcon(pixels, outline, foreground);
                 break;
 
             case ClanActionIcon.Resize:
@@ -636,6 +682,41 @@ internal static class ClanUiFeedback
         sprite.name = $"ClanActionIcon.{icon}";
         sprite.hideFlags = HideFlags.HideAndDontSave;
         return new IconAsset(texture, sprite);
+    }
+
+    private static void DrawFolderIcon(
+        Color32[] pixels,
+        Color32 outline,
+        Color32 foreground)
+    {
+        Vector2[] outlinePoints =
+        {
+            new(6f, 7f),
+            new(26f, 7f),
+            new(26f, 21f),
+            new(16f, 21f),
+            new(13f, 25f),
+            new(6f, 25f),
+            new(6f, 7f)
+        };
+        for (int index = 1; index < outlinePoints.Length; index++)
+        {
+            DrawLine(
+                pixels,
+                outlinePoints[index - 1],
+                outlinePoints[index],
+                6f,
+                outline);
+        }
+        for (int index = 1; index < outlinePoints.Length; index++)
+        {
+            DrawLine(
+                pixels,
+                outlinePoints[index - 1],
+                outlinePoints[index],
+                3f,
+                foreground);
+        }
     }
 
     private static void DrawResizeIcon(Color32[] pixels, float width, Color32 color)
@@ -819,33 +900,63 @@ internal static class ClanUiFeedback
         private string _value = "";
         private bool _scheduled;
         private bool _shown;
+        private bool _pointerInside;
         private bool _usePointerPosition;
-        private bool _preferTargetHierarchy;
         private bool _richText;
+        private ClanTooltipPlacement _placement;
         private Vector2 _pointerPosition;
         private float _showAt;
 
         internal void Configure(
             Selectable target,
             string value,
-            bool preferTargetHierarchy,
-            bool richText)
+            bool richText,
+            ClanTooltipPlacement placement)
         {
+            string normalizedValue = value?.Trim() ?? "";
+            if (_target == target &&
+                _value == normalizedValue &&
+                _richText == richText &&
+                _placement == placement)
+            {
+                enabled = normalizedValue.Length > 0;
+                return;
+            }
+
+            bool refreshHoveredTooltip =
+                _target == target &&
+                _pointerInside &&
+                normalizedValue.Length > 0;
             Cancel();
             _target = target;
-            _value = value?.Trim() ?? "";
-            _preferTargetHierarchy = preferTargetHierarchy;
+            _value = normalizedValue;
             _richText = richText;
+            _placement = placement;
             enabled = _value.Length > 0;
+            if (refreshHoveredTooltip)
+            {
+                _usePointerPosition = true;
+                _pointerPosition = Input.mousePosition;
+                _shown = ShowTooltip(
+                    this,
+                    target,
+                    _value,
+                    true,
+                    _pointerPosition,
+                    _richText,
+                    _placement);
+            }
         }
 
         public void OnPointerEnter(PointerEventData eventData)
         {
+            _pointerInside = true;
             Schedule(usePointerPosition: true, eventData.position);
         }
 
         public void OnPointerExit(PointerEventData eventData)
         {
+            _pointerInside = false;
             Cancel();
         }
 
@@ -870,8 +981,8 @@ internal static class ClanUiFeedback
                     _value,
                     _usePointerPosition,
                     _pointerPosition,
-                    _preferTargetHierarchy,
-                    _richText);
+                    _richText,
+                    _placement);
             }
             else if (_shown && IsTooltipRootMissingFor(this) && _target != null)
             {
@@ -882,18 +993,20 @@ internal static class ClanUiFeedback
                     _value,
                     _usePointerPosition,
                     _pointerPosition,
-                    _preferTargetHierarchy,
-                    _richText);
+                    _richText,
+                    _placement);
             }
         }
 
         private void OnDisable()
         {
+            _pointerInside = false;
             Cancel();
         }
 
         private void OnDestroy()
         {
+            _pointerInside = false;
             Cancel();
         }
 

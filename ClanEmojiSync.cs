@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
-using BepInEx;
 using UnityEngine;
 
 namespace Clan;
@@ -20,6 +19,7 @@ internal static partial class ClanEmoji
     private const float ChunkResponseTimeoutSeconds = 5f;
     private const long EmojiCacheMaximumBytes = 384L * 1024 * 1024;
     private const long EmojiCacheTrimmedBytes = 320L * 1024 * 1024;
+    private const long PartialEmojiCacheMaximumAgeTicks = TimeSpan.TicksPerDay;
     private const long EmojiReloadDebounceTicks = TimeSpan.TicksPerMillisecond * 750;
     private const int MaximumReloadRetries = 3;
     private const float PeerRequestTokensPerSecond = 64f;
@@ -49,7 +49,7 @@ internal static partial class ClanEmoji
     private static int _emojiWatcherRestartFailures;
 
     private static string EmojiCacheDirectory =>
-        Path.Combine(Paths.CachePath, "Clan");
+        Path.Combine(ClanPlugin.DataDirectory, "cache");
 
     private static bool HasEmojiServerCatalog => _serverEmojiCatalog != null;
 
@@ -59,32 +59,10 @@ internal static partial class ClanEmoji
                StringComparer.Ordinal.Equals(_serverEmojiCatalog.Manifest, manifest);
     }
 
-    private static void InitEmojiSync()
+    private static void InitializeEmojiCache()
     {
-        try
-        {
-            Directory.CreateDirectory(EmojiDirectory);
-            Directory.CreateDirectory(EmblemDirectory);
-            Directory.CreateDirectory(EmojiCacheDirectory);
-            DeletePartialEmojiCacheFiles();
-        }
-        catch (Exception ex)
-        {
-            ClanPlugin.ClanLogger.LogWarning(
-                $"Clan media cache could not be initialized: {ex.Message}");
-        }
-    }
-
-    private static void DisposeEmojiSync()
-    {
-        DisposeEmojiFileWatcher();
-        _clientEmojiCatalog = null;
-        _serverEmojiCatalog = null;
-        EmojiPeerBudgets.Clear();
-        EmojiGlobalTransferBudget.Reset();
-        Interlocked.Exchange(ref _emojiReloadRequestedAtTicks, 0L);
-        Interlocked.Exchange(ref _emojiWatcherNeedsRestart, 0);
-        Interlocked.Exchange(ref _emojiWatcherRestartFailures, 0);
+        Directory.CreateDirectory(EmojiCacheDirectory);
+        DeletePartialEmojiCacheFiles();
     }
 
     private static void ResetEmojiSyncSession(ZNet? session)
@@ -97,6 +75,7 @@ internal static partial class ClanEmoji
         Interlocked.Exchange(ref _emojiReloadFailures, 0);
         Interlocked.Exchange(ref _emojiWatcherNeedsRestart, 0);
         Interlocked.Exchange(ref _emojiWatcherRestartFailures, 0);
+        _serverManifestPublishRetryPending = false;
         DisposeEmojiFileWatcher();
 
         if (session?.IsServer() == true)
@@ -122,7 +101,7 @@ internal static partial class ClanEmoji
         }
     }
 
-    private static void PublishEmojiServerCatalog(
+    private static ServerEmojiCatalog PrepareEmojiServerCatalog(
         string manifest,
         IReadOnlyList<ManifestRecord> records,
         IReadOnlyCollection<ServerEmojiBlob> blobs)
@@ -167,13 +146,18 @@ internal static partial class ClanEmoji
             byHash.Add(blob.Record.Hash, blob);
         }
 
-        _serverEmojiCatalog = new ServerEmojiCatalog(
+        return new ServerEmojiCatalog(
             manifest,
             ComputeSha256(Encoding.UTF8.GetBytes(manifest)),
             records.ToArray(),
             byHash);
+    }
+
+    private static void CommitEmojiServerCatalog(ServerEmojiCatalog catalog)
+    {
         EmojiPeerBudgets.Clear();
         EmojiGlobalTransferBudget.Reset();
+        _serverEmojiCatalog = catalog;
     }
 
     private static void ClearEmojiServerCatalog()
@@ -230,7 +214,9 @@ internal static partial class ClanEmoji
                 catalog.Failed = false;
                 catalog.Download = null;
                 catalog.NextRecordIndex = 0;
+                catalog.ServerHits = 0;
                 catalog.CacheHits = 0;
+                catalog.ConfigHits = 0;
                 catalog.Downloads = 0;
                 ClanPlugin.ClanLogger.LogInfo(
                     "Retrying the synchronized Clan media catalog after a transient failure.");
@@ -249,15 +235,30 @@ internal static partial class ClanEmoji
         {
             catalog.Ready = true;
             ClanPlugin.ClanLogger.LogInfo(
-                $"Clan media catalog is ready: {catalog.CacheHits} cache hits, " +
+                $"Clan media catalog is ready: {catalog.ServerHits} server hits, " +
+                $"{catalog.CacheHits} cache hits, {catalog.ConfigHits} config hits, " +
                 $"{catalog.Downloads} downloaded files.");
             return;
         }
 
         ManifestRecord record = catalog.Records[catalog.NextRecordIndex];
-        if (TryReadSyncedEmojiFile(record, out _))
+        if (TryReadSyncedEmojiFile(record, out _, out SyncedMediaFileSource source))
         {
-            catalog.CacheHits++;
+            switch (source)
+            {
+                case SyncedMediaFileSource.Server:
+                    catalog.ServerHits++;
+                    break;
+                case SyncedMediaFileSource.Cache:
+                    catalog.CacheHits++;
+                    break;
+                case SyncedMediaFileSource.Config:
+                    catalog.ConfigHits++;
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        "A synchronized Clan media file was resolved without a source.");
+            }
             catalog.NextRecordIndex++;
             return;
         }
@@ -746,24 +747,76 @@ internal static partial class ClanEmoji
         ManifestRecord record,
         out byte[] data)
     {
+        return TryReadSyncedEmojiFile(record, out data, out _);
+    }
+
+    private static bool TryReadSyncedEmojiFile(
+        ManifestRecord record,
+        out byte[] data,
+        out SyncedMediaFileSource source)
+    {
+        ZNet? session = ZNet.instance;
         ServerEmojiCatalog? serverCatalog = _serverEmojiCatalog;
-        if (ZNet.instance?.IsServer() == true &&
+        if (session?.IsServer() == true &&
             serverCatalog != null &&
             serverCatalog.Files.TryGetValue(record.Hash, out ServerEmojiBlob serverBlob) &&
             serverBlob.Data.Length == record.Length &&
             StringComparer.Ordinal.Equals(serverBlob.Record.Extension, record.Extension))
         {
             data = serverBlob.Data;
+            source = SyncedMediaFileSource.Server;
             return true;
         }
 
-        string path = EmojiCachePath(record);
+        if (TryReadEmojiCacheFile(record, out data))
+        {
+            source = SyncedMediaFileSource.Cache;
+            return true;
+        }
+
+        if (session != null &&
+            !session.IsServer() &&
+            TryReadConfiguredMediaFile(record, out data))
+        {
+            source = SyncedMediaFileSource.Config;
+            return true;
+        }
+
+        source = SyncedMediaFileSource.None;
+        return false;
+    }
+
+    private static bool TryReadConfiguredMediaFile(
+        ManifestRecord record,
+        out byte[] data)
+    {
+        string directory;
+        switch (record.Role)
+        {
+            case MediaRole.Emoji:
+                directory = EmojiDirectory;
+                break;
+            case MediaRole.Emblem:
+                directory = EmblemDirectory;
+                break;
+            default:
+                data = Array.Empty<byte>();
+                return false;
+        }
+        string path = Path.Combine(directory, record.Name + record.Extension);
+        return TryReadVerifiedMediaFile(record, path, out data);
+    }
+
+    private static bool TryReadVerifiedMediaFile(
+        ManifestRecord record,
+        string path,
+        out byte[] data)
+    {
         try
         {
             FileInfo file = new(path);
             if (!file.Exists || file.Length != record.Length)
             {
-                TryDeleteFile(path);
                 data = Array.Empty<byte>();
                 return false;
             }
@@ -771,34 +824,52 @@ internal static partial class ClanEmoji
             data = ReadStableFile(path, record.Length);
             if (!StringComparer.Ordinal.Equals(ComputeSha256(data), record.Hash))
             {
-                TryDeleteFile(path);
                 data = Array.Empty<byte>();
                 return false;
             }
 
-            try
-            {
-                File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
-            }
-            catch
-            {
-                // Cache recency is advisory only.
-            }
             return true;
         }
         catch
         {
-            TryDeleteFile(path);
             data = Array.Empty<byte>();
             return false;
         }
     }
 
+    private static bool TryReadEmojiCacheFile(
+        ManifestRecord record,
+        out byte[] data)
+    {
+        string path = EmojiCachePath(record);
+        if (!TryReadVerifiedMediaFile(record, path, out data))
+        {
+            return false;
+        }
+
+        try
+        {
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+        }
+        catch
+        {
+            // Cache recency is advisory only.
+        }
+        return true;
+    }
+
     private static void WriteEmojiCacheAtomically(ManifestRecord record, byte[] data)
     {
+        if (data.Length != record.Length ||
+            !StringComparer.Ordinal.Equals(ComputeSha256(data), record.Hash))
+        {
+            throw new InvalidDataException(
+                $"Cache data for '{record.Name + record.Extension}' does not match its manifest.");
+        }
+
         Directory.CreateDirectory(EmojiCacheDirectory);
         string destination = EmojiCachePath(record);
-        if (TryReadSyncedEmojiFile(record, out _))
+        if (TryReadEmojiCacheFile(record, out _))
         {
             return;
         }
@@ -816,12 +887,58 @@ internal static partial class ClanEmoji
                 stream.Flush(true);
             }
 
-            TryDeleteFile(destination);
-            File.Move(temporary, destination);
+            PublishEmojiCacheFile(record, temporary, destination);
         }
         finally
         {
             TryDeleteFile(temporary);
+        }
+    }
+
+    private static void PublishEmojiCacheFile(
+        ManifestRecord record,
+        string temporary,
+        string destination)
+    {
+        try
+        {
+            File.Move(temporary, destination);
+            return;
+        }
+        catch (IOException)
+        {
+            if (TryReadEmojiCacheFile(record, out _))
+            {
+                // Another process published the same immutable hash first.
+                return;
+            }
+        }
+
+        try
+        {
+            File.Replace(temporary, destination, null);
+        }
+        catch (IOException)
+        {
+            if (TryReadEmojiCacheFile(record, out _))
+            {
+                // A competing writer published the same valid hash during replacement.
+                return;
+            }
+
+            if (File.Exists(destination))
+            {
+                throw;
+            }
+
+            try
+            {
+                File.Move(temporary, destination);
+            }
+            catch (IOException) when (TryReadEmojiCacheFile(record, out _))
+            {
+                // A competing writer won the retry with the same valid hash.
+            }
         }
     }
 
@@ -832,11 +949,26 @@ internal static partial class ClanEmoji
 
     private static void PruneEmojiCache(IReadOnlyList<ManifestRecord> activeRecords)
     {
+        FileStream? pruneLock = null;
         try
         {
             DirectoryInfo directory = new(EmojiCacheDirectory);
             if (!directory.Exists)
             {
+                return;
+            }
+
+            try
+            {
+                pruneLock = new FileStream(
+                    Path.Combine(EmojiCacheDirectory, ".prune.lock"),
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None);
+            }
+            catch (IOException)
+            {
+                // Another profile is already pruning the shared cache.
                 return;
             }
 
@@ -877,6 +1009,10 @@ internal static partial class ClanEmoji
             ClanPlugin.ClanLogger.LogWarning(
                 $"Clan media cache cleanup failed: {ex.Message}");
         }
+        finally
+        {
+            pruneLock?.Dispose();
+        }
     }
 
     private static void DeletePartialEmojiCacheFiles()
@@ -886,12 +1022,23 @@ internal static partial class ClanEmoji
             return;
         }
 
+        long staleBeforeTicks = DateTime.UtcNow.Ticks - PartialEmojiCacheMaximumAgeTicks;
         foreach (string path in Directory.EnumerateFiles(
                      EmojiCacheDirectory,
                      "*.part",
                      SearchOption.TopDirectoryOnly))
         {
-            TryDeleteFile(path);
+            try
+            {
+                if (File.GetLastWriteTimeUtc(path).Ticks <= staleBeforeTicks)
+                {
+                    TryDeleteFile(path);
+                }
+            }
+            catch
+            {
+                // Another process may still be creating this cache entry.
+            }
         }
     }
 
@@ -1089,9 +1236,11 @@ internal static partial class ClanEmoji
         Interlocked.Exchange(ref _emojiReloadFailures, 0);
     }
 
-    private static void ScheduleEmojiServerReloadRetry(Exception error)
+    private static void ScheduleEmojiServerReloadRetry(
+        Exception error,
+        bool retryAnyError = false)
     {
-        if ((error is not IOException && error is not InvalidDataException) ||
+        if ((!retryAnyError && error is not IOException && error is not InvalidDataException) ||
             Interlocked.Increment(ref _emojiReloadFailures) > MaximumReloadRetries)
         {
             return;
@@ -1117,6 +1266,14 @@ internal static partial class ClanEmoji
         StaleCatalog = 2,
         Unavailable = 3,
         Rejected = 4
+    }
+
+    private enum SyncedMediaFileSource : byte
+    {
+        None = 0,
+        Server = 1,
+        Cache = 2,
+        Config = 3
     }
 
     private sealed class ServerEmojiBlob
@@ -1163,7 +1320,9 @@ internal static partial class ClanEmoji
         public readonly string CatalogId;
         public readonly IReadOnlyList<ManifestRecord> Records;
         public int NextRecordIndex;
+        public int ServerHits;
         public int CacheHits;
+        public int ConfigHits;
         public int Downloads;
         public ClientEmojiDownload? Download;
         public bool Ready;

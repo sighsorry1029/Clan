@@ -1,6 +1,7 @@
 | `Version` | `Update Notes` |
 |-----------|----------------|
-| 1.0.0     | - First public release; declares Groups and Guilds incompatibility and adds Clan API v4 with server-authoritative primary/Guest membership lookup, retained primary-member-only ward authorization, and shared commit-time registry invalidation |
+| 1.0.1     | - Adds English and Korean localization, H/G panel shortcuts, clearer clan/member/player, HUD, chat-filter, and map-ping UI, persistent Clan data and shared media caching, and reliability fixes for startup, cursor handling, Unicode validation, registry updates, and media synchronization |
+| 1.0.0     | - First public release; declares Groups and Guilds incompatibility, adds Clan API v4, separates optional server media packs under `BepInEx/config/Clan` from persistent registry, recent-player, and shared-cache data, omits embedded PNG/GIF defaults, and directly reuses byte-identical client media-pack files before downloading missing content |
 | 0.6.1     | - Replaces the hidden `+`/`-` height toggle with a persistent upper-left drag handle that uniformly scales the vanilla chat window, text, inline PNG/GIF emojis, and attached Clan controls while preserving the lower-right corner and screen bounds |
 | 0.6.0     | - Makes local PNG/GIF emoji tokens available in Say, Shout, Whisper, and Clan; replaces the Chatter type-specific label patch with presentation-time TMP token rendering; and adds a session-local chat height expand/restore button outside the upper-left corner |
 | 0.5.2     | - Silently skips the optional Chatter emoji integration when Chatter is not installed, removing harmless HarmonyX missing-type warnings without changing chat behavior |
