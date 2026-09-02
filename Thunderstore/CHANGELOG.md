@@ -1,5 +1,6 @@
 | `Version` | `Update Notes` |
 |-----------|----------------|
+| 1.0.2     | - Coalesces in-flight clan directory requests, debounces repeated refresh invalidations, retries queued refreshes after rate limits or send failures, recovers stalled requests after 30 seconds, and keeps directory panes loading without repeated rate-limit chat messages |
 | 1.0.1     | - Adds English and Korean localization, H/G panel shortcuts, clearer clan/member/player, HUD, chat-filter, and map-ping UI, persistent Clan data and shared media caching, and reliability fixes for startup, cursor handling, Unicode validation, registry updates, and media synchronization |
 | 1.0.0     | - First public release; declares Groups and Guilds incompatibility, adds Clan API v4, separates optional server media packs under `BepInEx/config/Clan` from persistent registry, recent-player, and shared-cache data, omits embedded PNG/GIF defaults, and directly reuses byte-identical client media-pack files before downloading missing content |
 | 0.6.1     | - Replaces the hidden `+`/`-` height toggle with a persistent upper-left drag handle that uniformly scales the vanilla chat window, text, inline PNG/GIF emojis, and attached Clan controls while preserving the lower-right corner and screen bounds |

@@ -19,7 +19,7 @@ namespace Clan;
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.0.1";
+    public const string ModVersion = "1.0.2";
     public const string Author = "sighsorry";
     public const string ModGUID = $"{Author}.{ModName}";
 

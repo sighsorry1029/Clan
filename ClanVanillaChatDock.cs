@@ -1679,7 +1679,11 @@ internal static class ClanVanillaChatDock
                 return;
             }
             ClanRpc.RequestSnapshot();
-            ClanRpc.RequestDirectory();
+            if (!ClanRpc.IsDirectoryRequestPending &&
+                !ClanRpc.IsDirectoryRefreshScheduled)
+            {
+                ClanRpc.RequestDirectory();
+            }
         }
         else
         {

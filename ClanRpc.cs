@@ -25,6 +25,7 @@ internal static class ClanRpc
     private const int MaximumDirectoryResponseBytes = 512 * 1024;
     private const int MaximumDirectoryRequestsPerWindow = 1;
     private const float DirectoryRequestWindowSeconds = 2f;
+    private const float DirectoryRequestTimeoutSeconds = 30f;
     private const int MaximumSnapshotRequestsPerWindow = 5;
     private const float SnapshotRequestWindowSeconds = 2f;
     private const int MaximumHudRequestsPerWindow = 5;
@@ -51,6 +52,7 @@ internal static class ClanRpc
     private static readonly object RequestIdLock = new();
     private static long _nextRequestId;
     private static long _pendingDirectoryRequestId;
+    private static float _pendingDirectoryRequestStartedAt;
     private static int _initialSnapshotRetriesRemaining;
     private static float _nextInitialSnapshotRetryAt;
     private static bool _initialSnapshotBootstrapStarted;
@@ -64,6 +66,7 @@ internal static class ClanRpc
     public static ClanHudSnapshot CurrentHudSnapshot { get; private set; } = new();
     public static ClanDirectorySnapshot CurrentDirectory { get; private set; } = new();
     public static bool IsDirectoryRequestPending => _pendingDirectoryRequestId > 0L;
+    public static bool IsDirectoryRefreshScheduled => _retryDirectoryWhenIdentityReady;
     internal static bool IsIdentityReady => _identityReady;
 
     public static event Action<ClanClientSnapshot>? SnapshotChanged;
@@ -137,6 +140,16 @@ internal static class ClanRpc
     public static void Tick()
     {
         float now = Time.realtimeSinceStartup;
+        if (_pendingDirectoryRequestId > 0L &&
+            (now < _pendingDirectoryRequestStartedAt ||
+             now - _pendingDirectoryRequestStartedAt >= DirectoryRequestTimeoutSeconds))
+        {
+            ClanPlugin.ClanLogger.LogWarning(
+                "Clan directory request timed out; scheduling one retry.");
+            ClearPendingDirectoryRequest();
+            ScheduleDirectoryRefresh(0f);
+        }
+
         EnsureInitialSnapshotBootstrap();
         if (!_initialSnapshotBootstrapComplete &&
             _initialSnapshotRetriesRemaining > 0 &&
@@ -150,9 +163,9 @@ internal static class ClanRpc
 
         if (_identityReady &&
             _retryDirectoryWhenIdentityReady &&
-            now >= _directoryIdentityRetryAt)
+            now >= _directoryIdentityRetryAt &&
+            _pendingDirectoryRequestId <= 0L)
         {
-            _retryDirectoryWhenIdentityReady = false;
             RequestDirectory();
         }
     }
@@ -188,25 +201,44 @@ internal static class ClanRpc
 
     public static long RequestDirectory()
     {
-        _retryDirectoryWhenIdentityReady = false;
+        if (_pendingDirectoryRequestId > 0L)
+        {
+            return _pendingDirectoryRequestId;
+        }
+
+        bool refreshWasScheduled = _retryDirectoryWhenIdentityReady;
         ZNet? network = ZNet.instance;
         if (network == null ||
             (network.GetServerRPC() == null && !network.IsServer()))
         {
-            _pendingDirectoryRequestId = 0L;
+            ClearPendingDirectoryRequest();
+            if (refreshWasScheduled)
+            {
+                ScheduleDirectoryRefresh(
+                    DirectoryRequestWindowSeconds + 0.1f,
+                    postpone: true);
+            }
             NotifyStatus(ClanLocalization.Text("clan_status_server_not_connected"));
             return 0L;
         }
 
+        _retryDirectoryWhenIdentityReady = false;
         long requestId = NextRequestId();
         _pendingDirectoryRequestId = requestId;
+        _pendingDirectoryRequestStartedAt = Time.realtimeSinceStartup;
         if (!Send(new ClanRequest
         {
             Type = ClanRequestType.RequestDirectory,
             RequestId = requestId
         }))
         {
-            _pendingDirectoryRequestId = 0L;
+            ClearPendingDirectoryRequest();
+            if (refreshWasScheduled)
+            {
+                ScheduleDirectoryRefresh(
+                    DirectoryRequestWindowSeconds + 0.1f,
+                    postpone: true);
+            }
             return 0L;
         }
         return requestId;
@@ -226,11 +258,29 @@ internal static class ClanRpc
 
     public static void InvalidateDirectory()
     {
-        _pendingDirectoryRequestId = 0L;
-        _retryDirectoryWhenIdentityReady = true;
-        _directoryIdentityRetryAt = Time.realtimeSinceStartup + DirectoryRequestWindowSeconds + 0.1f;
+        ClearPendingDirectoryRequest();
+        ScheduleDirectoryRefresh(DirectoryRequestWindowSeconds + 0.1f);
         CurrentDirectory = new ClanDirectorySnapshot();
         Publish(DirectoryChanged, CurrentDirectory, "directory");
+    }
+
+    private static void ScheduleDirectoryRefresh(float delaySeconds, bool postpone = false)
+    {
+        float refreshAt = Time.realtimeSinceStartup + Mathf.Max(0f, delaySeconds);
+        if (!_retryDirectoryWhenIdentityReady ||
+            (postpone
+                ? refreshAt > _directoryIdentityRetryAt
+                : refreshAt < _directoryIdentityRetryAt))
+        {
+            _directoryIdentityRetryAt = refreshAt;
+        }
+        _retryDirectoryWhenIdentityReady = true;
+    }
+
+    private static void ClearPendingDirectoryRequest()
+    {
+        _pendingDirectoryRequestId = 0L;
+        _pendingDirectoryRequestStartedAt = 0f;
     }
 
     public static void NotifyStatus(string message)
@@ -656,20 +706,20 @@ internal static class ClanRpc
                     {
                         return;
                     }
-                    _pendingDirectoryRequestId = 0L;
+                    ClearPendingDirectoryRequest();
                     if (directory.ResultCode == ClanOperationResultCode.IdentityUnavailable)
                     {
-                        _retryDirectoryWhenIdentityReady = true;
-                        _directoryIdentityRetryAt =
-                            Time.realtimeSinceStartup + DirectoryRequestWindowSeconds + 0.1f;
+                        ScheduleDirectoryRefresh(
+                            DirectoryRequestWindowSeconds + 0.1f,
+                            postpone: true);
                         Publish(StatusReceived, directory.Status, "status");
                         break;
                     }
                     if (directory.ResultCode == ClanOperationResultCode.RateLimited)
                     {
-                        _retryDirectoryWhenIdentityReady = true;
-                        _directoryIdentityRetryAt =
-                            Time.realtimeSinceStartup + DirectoryRequestWindowSeconds + 0.1f;
+                        ScheduleDirectoryRefresh(
+                            DirectoryRequestWindowSeconds + 0.1f,
+                            postpone: true);
                     }
                     if (!directory.IsTruncated &&
                         directory.ResultCode is not ClanOperationResultCode.None and
@@ -683,7 +733,8 @@ internal static class ClanRpc
                     }
                     CurrentDirectory = directory;
                     Publish(DirectoryChanged, CurrentDirectory, "directory");
-                    if (!string.IsNullOrWhiteSpace(CurrentDirectory.Status))
+                    if (directory.ResultCode != ClanOperationResultCode.RateLimited &&
+                        !string.IsNullOrWhiteSpace(CurrentDirectory.Status))
                     {
                         Publish(StatusReceived, CurrentDirectory.Status, "status");
                     }
@@ -691,9 +742,8 @@ internal static class ClanRpc
                 case ClanResponseType.DirectoryInvalidated:
                     RequirePackageConsumed(package);
                     packageValidated = true;
-                    _pendingDirectoryRequestId = 0L;
-                    _retryDirectoryWhenIdentityReady = true;
-                    _directoryIdentityRetryAt = Time.realtimeSinceStartup + 0.1f;
+                    ClearPendingDirectoryRequest();
+                    ScheduleDirectoryRefresh(DirectoryRequestWindowSeconds + 0.1f);
                     CurrentDirectory = new ClanDirectorySnapshot();
                     Publish(DirectoryChanged, CurrentDirectory, "directory");
                     break;
@@ -906,7 +956,7 @@ internal static class ClanRpc
         CurrentSnapshot = new ClanClientSnapshot();
         CurrentHudSnapshot = new ClanHudSnapshot();
         CurrentDirectory = new ClanDirectorySnapshot();
-        _pendingDirectoryRequestId = 0L;
+        ClearPendingDirectoryRequest();
         _initialSnapshotRetriesRemaining = 0;
         _nextInitialSnapshotRetryAt = 0f;
         _initialSnapshotBootstrapStarted = false;

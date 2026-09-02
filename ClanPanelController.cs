@@ -102,11 +102,16 @@ internal static class ClanPanelController
     private static string _draftEmblemKey = "";
     private static string _editorError = "";
     private static float _directoryRefreshAt = float.PositiveInfinity;
-    private static bool _directoryPendingAtLastBuild;
+    private static bool _directoryLoadingAtLastBuild;
 
     public static event Action<bool>? OpenStateChanged;
 
     public static bool IsOpen => _root != null && _root.activeSelf;
+
+    private static bool IsDirectoryLoading =>
+        ClanRpc.IsDirectoryRequestPending ||
+        ClanRpc.IsDirectoryRefreshScheduled ||
+        !float.IsPositiveInfinity(_directoryRefreshAt);
 
     public static bool CapturesGameplayInput =>
         _root != null && _root.activeInHierarchy;
@@ -224,7 +229,8 @@ internal static class ClanPanelController
         if (!IsOpen ||
             float.IsPositiveInfinity(_directoryRefreshAt) ||
             Time.unscaledTime < _directoryRefreshAt ||
-            ClanRpc.IsDirectoryRequestPending)
+            ClanRpc.IsDirectoryRequestPending ||
+            ClanRpc.IsDirectoryRefreshScheduled)
         {
             return;
         }
@@ -264,7 +270,7 @@ internal static class ClanPanelController
             _directoryRefreshAt = float.PositiveInfinity;
             ClearConfirmation();
         }
-        _directoryPendingAtLastBuild = false;
+        _directoryLoadingAtLastBuild = false;
         _resetClanScrollOnNextPopulate = false;
         _clanRowsDirty = false;
         _peopleRowsDirty = false;
@@ -466,11 +472,11 @@ internal static class ClanPanelController
         }
         bool presentationChanged = !HasSameDirectoryPresentation(_directory, next);
         _directory = next;
-        bool pendingStateChanged =
+        bool loadingStateChanged =
             IsOpen &&
-            _directoryPendingAtLastBuild != ClanRpc.IsDirectoryRequestPending;
+            _directoryLoadingAtLastBuild != IsDirectoryLoading;
         if (IsOpen &&
-            (presentationChanged || pendingStateChanged) &&
+            (presentationChanged || loadingStateChanged) &&
             !_editorOpen)
         {
             _clanRowsDirty = true;
@@ -632,7 +638,7 @@ internal static class ClanPanelController
         _peopleRowsDirty = false;
         _editorErrorBanner = null;
         _editorErrorLabel = null;
-        _directoryPendingAtLastBuild = ClanRpc.IsDirectoryRequestPending;
+        _directoryLoadingAtLastBuild = IsDirectoryLoading;
 
         BuildHeader(_root.transform);
         BuildOverview(_root.transform);
@@ -912,7 +918,7 @@ internal static class ClanPanelController
         scroll.StopMovement();
         ClanUiFactory.ClearChildren(content);
         _clanRowsDirty = false;
-        _directoryPendingAtLastBuild = ClanRpc.IsDirectoryRequestPending;
+        _directoryLoadingAtLastBuild = IsDirectoryLoading;
         IReadOnlyList<ClanPublicSummary> source = _directory.PublicClans;
         IReadOnlyList<ClanPublicSummary> clans = source
             .Where(MatchesClanSearch)
@@ -926,8 +932,7 @@ internal static class ClanPanelController
             string emptyText = source.Count > 0 &&
                                !string.IsNullOrEmpty(_clanSearchQuery)
                 ? ClanLocalization.Text("panel_no_clans_match")
-                : ClanRpc.IsDirectoryRequestPending ||
-                  !float.IsPositiveInfinity(_directoryRefreshAt)
+                : IsDirectoryLoading
                     ? ClanLocalization.Text("panel_loading_clans")
                     : ClanLocalization.Text("panel_no_clans");
             CreateTopLabel(
@@ -1376,7 +1381,7 @@ internal static class ClanPanelController
         scroll.StopMovement();
         ClanUiFactory.ClearChildren(content);
         _peopleRowsDirty = false;
-        _directoryPendingAtLastBuild = ClanRpc.IsDirectoryRequestPending;
+        _directoryLoadingAtLastBuild = IsDirectoryLoading;
         float usedHeight = _tab == PanelTab.Members
             ? BuildMembersTab(content)
             : BuildPlayersTab(content);
@@ -1693,7 +1698,7 @@ internal static class ClanPanelController
             string emptyText = source.Count > 0 &&
                                !string.IsNullOrEmpty(_playerSearchQuery)
                 ? ClanLocalization.Text("panel_no_players_or_clans_match")
-                : ClanRpc.IsDirectoryRequestPending
+                : IsDirectoryLoading
                     ? ClanLocalization.Text("panel_loading_recent_players")
                     : ClanLocalization.Text("panel_no_recent_players");
             CreateTopLabel(
@@ -2343,7 +2348,10 @@ internal static class ClanPanelController
         ClearConfirmation();
         RefreshHeaderState();
         PopulatePeopleRows();
-        if (_tab == PanelTab.Players && _directory.RequestId <= 0L)
+        if (_tab == PanelTab.Players &&
+            _directory.RequestId <= 0L &&
+            !ClanRpc.IsDirectoryRequestPending &&
+            !ClanRpc.IsDirectoryRefreshScheduled)
         {
             ClanRpc.RequestDirectory();
         }
