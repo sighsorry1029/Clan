@@ -742,10 +742,7 @@ internal static class ClanRpc
                 case ClanResponseType.DirectoryInvalidated:
                     RequirePackageConsumed(package);
                     packageValidated = true;
-                    ClearPendingDirectoryRequest();
-                    ScheduleDirectoryRefresh(DirectoryRequestWindowSeconds + 0.1f);
-                    CurrentDirectory = new ClanDirectorySnapshot();
-                    Publish(DirectoryChanged, CurrentDirectory, "directory");
+                    InvalidateDirectory();
                     break;
                 default:
                     throw new InvalidOperationException($"Unknown clan response type {(int)type}.");

@@ -100,8 +100,6 @@ internal static partial class ClanEmoji
         new(StringComparer.Ordinal);
     private static string _activeManifest = "";
     private static IReadOnlyList<ManifestRecord> _activeRecords = Array.Empty<ManifestRecord>();
-    private static string _waitingManifest = "";
-    private static List<ManifestRecord>? _waitingRecords;
     private static PendingManifestState? _pendingManifest;
     private static TMP_Text? _attachedOutput;
     private static TMP_SpriteAsset? _fallbackOwner;
@@ -299,8 +297,6 @@ internal static partial class ClanEmoji
         _preparedSources.Clear();
         _activeManifest = "";
         _activeRecords = Array.Empty<ManifestRecord>();
-        _waitingManifest = "";
-        _waitingRecords = null;
         ResetEmojiSyncSession(session);
         ReplaceRuntime(null);
     }
@@ -1426,8 +1422,6 @@ internal static partial class ClanEmoji
     private static void StartBuild(string manifest)
     {
         CancelBuild();
-        _waitingManifest = "";
-        _waitingRecords = null;
         CancelEmojiClientCatalog();
 
         try
@@ -1446,8 +1440,6 @@ internal static partial class ClanEmoji
                 return;
             }
 
-            _waitingManifest = manifest;
-            _waitingRecords = records;
             BeginEmojiClientCatalog(manifest, records);
         }
         catch (Exception ex)
@@ -1459,15 +1451,16 @@ internal static partial class ClanEmoji
 
     private static void StartReadyEmojiBuild()
     {
-        if (_waitingRecords == null ||
-            !IsEmojiClientCatalogReady(_waitingManifest))
+        ClientEmojiCatalog? catalog = _clientEmojiCatalog;
+        if (catalog == null ||
+            !catalog.Ready ||
+            !ReferenceEquals(catalog.Session, ZNet.instance))
         {
             return;
         }
 
-        _build = new BuildState(_waitingManifest, _waitingRecords, ZNet.instance);
-        _waitingManifest = "";
-        _waitingRecords = null;
+        _build = new BuildState(catalog.Manifest, catalog.Records, catalog.Session);
+        _clientEmojiCatalog = null;
     }
 
     private static void CancelBuild()
@@ -2763,10 +2756,10 @@ internal static partial class ClanEmoji
         private static void Prefix(TMP_Text __instance, ref string value)
         {
             if (__instance == null ||
-                !ClanVanillaChatDock.SupportsCurrentChatUi ||
                 Chat.instance == null ||
                 ((Terminal)Chat.instance).m_output is not TMP_Text output ||
-                !ReferenceEquals(__instance, output))
+                !ReferenceEquals(__instance, output) ||
+                !ClanVanillaChatDock.SupportsCurrentChatUi)
             {
                 return;
             }

@@ -174,6 +174,15 @@ internal static class ClanUiFeedback
         }
     }
 
+    internal static void CancelTooltip(Selectable selectable)
+    {
+        // Retained controls need to cancel delayed display as well as a visible tooltip.
+        if (selectable != null)
+        {
+            selectable.GetComponent<TooltipTrigger>()?.Cancel();
+        }
+    }
+
     /// <summary>
     /// Releases generated textures, sprites, and the shared tooltip object.
     /// Calling this more than once is safe.
@@ -1030,7 +1039,7 @@ internal static class ClanUiFeedback
             _shown = false;
         }
 
-        private void Cancel()
+        internal void Cancel()
         {
             _scheduled = false;
             _shown = false;

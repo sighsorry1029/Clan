@@ -19,7 +19,7 @@ namespace Clan;
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.0.2";
+    public const string ModVersion = "1.0.4";
     public const string Author = "sighsorry";
     public const string ModGUID = $"{Author}.{ModName}";
 
@@ -152,13 +152,13 @@ public sealed class ClanPlugin : BaseUnityPlugin
             ClanPanelShortcut = ConfigEntry(
                 "2 - UI",
                 "Clan Panel Shortcut",
-                new KeyboardShortcut(KeyCode.H),
+                new KeyboardShortcut(KeyCode.J),
                 "Client-only shortcut that opens or closes the Clan panel. Set the main key to None to disable it.",
                 synchronizedSetting: false);
             EmojiPanelShortcut = ConfigEntry(
                 "2 - UI",
                 "Emoji Panel Shortcut",
-                new KeyboardShortcut(KeyCode.G),
+                new KeyboardShortcut(KeyCode.H),
                 "Client-only shortcut that opens the chat and Emoji panel. Set the main key to None to disable it.",
                 synchronizedSetting: false);
             ShowWhisperChatButton = ConfigEntry(

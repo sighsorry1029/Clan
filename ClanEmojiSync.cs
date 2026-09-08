@@ -183,15 +183,6 @@ internal static partial class ClanEmoji
         _clientEmojiCatalog = null;
     }
 
-    private static bool IsEmojiClientCatalogReady(string manifest)
-    {
-        ClientEmojiCatalog? catalog = _clientEmojiCatalog;
-        return catalog != null &&
-               catalog.Ready &&
-               ReferenceEquals(catalog.Session, ZNet.instance) &&
-               StringComparer.Ordinal.Equals(catalog.Manifest, manifest);
-    }
-
     private static void TickEmojiSync()
     {
         ClientEmojiCatalog? catalog = _clientEmojiCatalog;
@@ -283,12 +274,6 @@ internal static partial class ClanEmoji
         {
             try
             {
-                string hash = ComputeSha256(download.Buffer);
-                if (!StringComparer.Ordinal.Equals(hash, download.Record.Hash))
-                {
-                    throw new InvalidDataException("Downloaded SHA-256 does not match the manifest.");
-                }
-
                 WriteEmojiCacheAtomically(download.Record, download.Buffer);
                 catalog.Download = null;
                 catalog.NextRecordIndex++;
@@ -860,11 +845,14 @@ internal static partial class ClanEmoji
 
     private static void WriteEmojiCacheAtomically(ManifestRecord record, byte[] data)
     {
-        if (data.Length != record.Length ||
-            !StringComparer.Ordinal.Equals(ComputeSha256(data), record.Hash))
+        if (data.Length != record.Length)
         {
             throw new InvalidDataException(
                 $"Cache data for '{record.Name + record.Extension}' does not match its manifest.");
+        }
+        if (!StringComparer.Ordinal.Equals(ComputeSha256(data), record.Hash))
+        {
+            throw new InvalidDataException("Downloaded SHA-256 does not match the manifest.");
         }
 
         Directory.CreateDirectory(EmojiCacheDirectory);

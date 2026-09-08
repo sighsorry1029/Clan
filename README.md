@@ -50,8 +50,8 @@ Open the five-column emoji picker from chat to insert server-synchronized PNG or
 
 | Action | Default control |
 | --- | --- |
-| Open or close the Clan panel | `H` |
-| Open chat and the Emoji panel | `G` |
+| Open or close the Clan panel | `J` |
+| Open chat and the Emoji panel | `H` |
 | Send a clan-only map ping | Hold `Left Shift` while using the vanilla map ping |
 
 Open the Clan panel to create a clan or apply to an existing one. Open vanilla chat to select a channel, insert emoji, filter visible messages, or open the Clan panel from the attached controls.
@@ -123,8 +123,8 @@ Main defaults are:
 | Share Clan Positions | `On` | Server-synchronized |
 | Clan Ping Modifier Key | `Left Shift` | Client |
 | Clan Chat Window Scale | `2` (`1`–`2`) | Client |
-| Clan Panel Shortcut | `H` | Client |
-| Emoji Panel Shortcut | `G` | Client |
+| Clan Panel Shortcut | `J` | Client |
+| Emoji Panel Shortcut | `H` | Client |
 | Chat After Send | `KeepOpen` | Client |
 | Show Clan Member HUD | `On` | Client |
 
@@ -153,6 +153,17 @@ Worlds and mod-manager profiles using the same Valheim save-data root share this
 
 ## Mod API
 
-`ClanApi.ApiVersion` is `4`. Server-side integrations can query authoritative primary and Guest memberships with `ResolveMemberships`, query ward access with `ResolveWardAuthorization`, and invalidate cached results through `RegistryRevision` and `RegistryChanged`.
+`ClanApi.ApiVersion` is `5`. Server-side integrations can query authoritative primary and Guest memberships with `ResolveMemberships`, query ward access with `ResolveWardAuthorization`, and invalidate cached results through `RegistryRevision` and `RegistryChanged`.
 
 Fail closed when either lookup returns `Unavailable`.
+
+API v5 adds the optional `ClanApi.ServerChatAccepted` event:
+
+```csharp
+Action<string, long, string, string, string, string>
+// platformId, characterPlayerId, playerName, clanId, clanName, message
+```
+
+It fires once on the authoritative dedicated server or local host after identity, membership, text, and rate-limit checks accept a clan message, before delivery to clan members. It does not fire on receiving clients or for rejected/rate-limited messages. Subscribe once, unsubscribe when your integration stops, and keep handlers quick. Nonfatal subscriber failures are isolated from other handlers and chat delivery; diagnostics never include message content.
+
+This additive event enables optional server-side logging integrations such as ServerManager. Clan remains standalone and does not require ServerManager. Clan chat remains private to its clan recipients, but an installed server-side integration can record accepted messages in the server's local logs. The event itself does not log content or create a public chat relay.

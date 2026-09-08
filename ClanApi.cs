@@ -304,7 +304,7 @@ public sealed class ClanRenameRequestHandle
 
 public static class ClanApi
 {
-    public const int ApiVersion = 4;
+    public const int ApiVersion = 5;
 
     private const float RenameTimeoutSeconds = 15f;
     private static readonly object PendingLock = new();
@@ -336,6 +336,13 @@ public static class ClanApi
     /// Subscriber exceptions are isolated from Clan persistence and from other subscribers.
     /// </summary>
     public static event Action? RegistryChanged;
+    /// <summary>
+    /// Raised once on the authoritative server after clan chat passes identity, membership,
+    /// text, and rate-limit checks, before delivery to clan members. Parameters are platform ID,
+    /// character player ID, player name, clan ID, clan name, and the accepted message.
+    /// This event is not sent to clients. Nonfatal subscriber failures do not prevent chat delivery.
+    /// </summary>
+    public static event Action<string, long, string, string, string, string>? ServerChatAccepted;
 
     /// <summary>
     /// Resolves the canonical platform-and-character identity against the authoritative server
@@ -394,6 +401,7 @@ public static class ClanApi
 
     internal static void Dispose()
     {
+        ServerChatAccepted = null;
         if (!_initialized)
         {
             return;
@@ -410,6 +418,54 @@ public static class ClanApi
         RenameCompleted = null;
         WardAuthorizationChanged = null;
         RegistryChanged = null;
+    }
+
+    internal static void NotifyServerChatAccepted(
+        ClanPlayerRef actor,
+        string clanId,
+        string clanName,
+        string message)
+    {
+        Action<string, long, string, string, string, string>? subscribers = ServerChatAccepted;
+        if (ZNet.instance?.IsServer() != true || subscribers == null)
+        {
+            return;
+        }
+
+        foreach (Action<string, long, string, string, string, string> subscriber in
+                 subscribers.GetInvocationList())
+        {
+            try
+            {
+                subscriber(
+                    actor.PlatformId,
+                    actor.CharacterPlayerId,
+                    actor.Name,
+                    clanId,
+                    clanName,
+                    message);
+            }
+            catch (Exception exception) when (IsNonFatalChatSubscriberException(exception))
+            {
+                try
+                {
+                    ClanPlugin.ClanLogger.LogWarning(
+                        "Clan API server chat subscriber failed; chat delivery will continue.");
+                }
+                catch (Exception loggingException) when (IsNonFatalChatSubscriberException(loggingException))
+                {
+                    // A broken logging sink must not interrupt delivery or later subscribers.
+                }
+            }
+        }
+    }
+
+    private static bool IsNonFatalChatSubscriberException(Exception exception)
+    {
+        return exception is not OutOfMemoryException and
+            not StackOverflowException and
+            not ThreadAbortException and
+            not AccessViolationException;
     }
 
     internal static void NotifyRegistryChanged()

@@ -1008,12 +1008,11 @@ internal static class ClanVanillaChatDock
     private static void PlaceChannelDock(
         RectTransform channelRect,
         RectTransform rootRect,
-        RectTransform inputRect,
+        Rect chatBounds,
         bool railPositioned,
         bool railOnLeft,
         float railHorizontalPoint)
     {
-        Rect chatBounds = GetChatVisualScreenBounds(_chatPanelRect ?? inputRect);
         Rect channelBounds = GetScreenBounds(channelRect);
         Rect safeArea = GetSafeArea();
         float visualWidth = channelBounds.width;
@@ -1078,14 +1077,13 @@ internal static class ClanVanillaChatDock
     private static void PlaceCommandDock(
         RectTransform commandRect,
         RectTransform rootRect,
-        RectTransform inputRect)
+        Rect chatBounds)
     {
         if (!commandRect.gameObject.activeSelf)
         {
             return;
         }
 
-        Rect chatBounds = GetChatVisualScreenBounds(_chatPanelRect ?? inputRect);
         Rect commandBounds = GetScreenBounds(commandRect);
         Rect safeArea = GetSafeArea();
         float visualWidth = commandBounds.width;
@@ -1111,7 +1109,7 @@ internal static class ClanVanillaChatDock
 
     private static bool PlaceLeftRailStack(
         RectTransform rootRect,
-        RectTransform inputRect,
+        Rect measuredChatBounds,
         Rect inputBounds,
         out bool placeLeft,
         out float horizontalPoint)
@@ -1139,8 +1137,6 @@ internal static class ClanVanillaChatDock
         float desiredBottom = inputBounds.yMin;
         if (_chatViewDockRect != null && _channelDockRect != null)
         {
-            Rect measuredChatBounds =
-                GetChatVisualScreenBounds(_chatPanelRect ?? inputRect);
             Rect chatBounds = IsUsableChatPlacementBounds(
                 measuredChatBounds,
                 safeArea)
@@ -1801,9 +1797,10 @@ internal static class ClanVanillaChatDock
             inputRect,
             out float dockScale);
         ApplyClanDockScale(dockScale);
+        Rect chatBounds = GetChatVisualScreenBounds(_chatPanelRect ?? inputRect);
         bool railPositioned = PlaceLeftRailStack(
             _rootRect,
-            inputRect,
+            chatBounds,
             inputBounds,
             out bool railOnLeft,
             out float railHorizontalPoint);
@@ -1812,14 +1809,14 @@ internal static class ClanVanillaChatDock
             PlaceChannelDock(
                 _channelDockRect,
                 _rootRect,
-                inputRect,
+                chatBounds,
                 railPositioned,
                 railOnLeft,
                 railHorizontalPoint);
         }
         if (_commandDockRect != null)
         {
-            PlaceCommandDock(_commandDockRect, _rootRect, inputRect);
+            PlaceCommandDock(_commandDockRect, _rootRect, chatBounds);
         }
         if (railPositioned && IsChatInputOpen(input))
         {
@@ -2374,8 +2371,8 @@ internal static class ClanVanillaChatDock
         bool filtering = _chatViewMode != ChatViewMode.All;
         SetButtonColor(
             _chatViewButton,
-            filtering ? ActiveToggleButtonColor : InactiveToggleButtonColor,
-            filtering ? Color.white : InactiveButtonLabelColor);
+            filtering ? ActiveToggleButtonColor : ButtonColor,
+            Color.white);
         if (refreshTooltip && _chatViewButton != null)
         {
             ClanUiFeedback.SetTooltip(

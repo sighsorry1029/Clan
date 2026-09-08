@@ -2129,7 +2129,14 @@ internal static class ClanRegistry
         }
 
         member.LastClanChatTime = now;
-        ClanRpc.BroadcastChat(clan, actor.Name, message);
+        string acceptedClanId = clan.ClanId;
+        ClanApi.NotifyServerChatAccepted(actor, acceptedClanId, clan.Name, message);
+        // A subscriber can synchronously replace the registry. Deliver to the current
+        // members of the accepted clan, even if the sender changed clans in the callback.
+        if (ClansById.TryGetValue(acceptedClanId, out ClanState currentClan))
+        {
+            ClanRpc.BroadcastChat(currentClan, actor.Name, message);
+        }
         return "";
     }
 

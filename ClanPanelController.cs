@@ -74,6 +74,8 @@ internal static class ClanPanelController
     private static RectTransform? _clanScrollContent;
     private static ScrollRect? _peopleScroll;
     private static RectTransform? _peopleScrollContent;
+    private static ScrollRect? _editorEmblemScroll;
+    private static Button? _selectedEmblemButton;
     private static GameObject? _editorErrorBanner;
     private static Text? _editorErrorLabel;
     private static ClanClientSnapshot _snapshot = new();
@@ -95,7 +97,6 @@ internal static class ClanPanelController
 
     private static bool _editorOpen;
     private static bool _editorCreating;
-    private static bool _editorSubmissionPending;
     private static long _editorSubmissionRequestId;
     private static string _draftName = "";
     private static string _draftDescription = "";
@@ -107,6 +108,8 @@ internal static class ClanPanelController
     public static event Action<bool>? OpenStateChanged;
 
     public static bool IsOpen => _root != null && _root.activeSelf;
+
+    private static bool IsEditorSubmissionPending => _editorSubmissionRequestId > 0L;
 
     private static bool IsDirectoryLoading =>
         ClanRpc.IsDirectoryRequestPending ||
@@ -249,18 +252,7 @@ internal static class ClanPanelController
         _root = null;
         _rootRect = null;
         _overlayRoot = null;
-        _profileActionButton = null;
-        _membersTabButton = null;
-        _membersTabButtonLabel = null;
-        _playersTabButton = null;
-        _clanSearchInput = null;
-        _playerSearchInput = null;
-        _clanScroll = null;
-        _clanScrollContent = null;
-        _peopleScroll = null;
-        _peopleScrollContent = null;
-        _editorErrorBanner = null;
-        _editorErrorLabel = null;
+        ClearViewReferences();
         _positionValid = false;
         if (!preserveInteractionState)
         {
@@ -398,8 +390,7 @@ internal static class ClanPanelController
         bool editorWasOpen = _editorOpen;
         bool editorResponseArrived =
             responseArrived &&
-            _editorSubmissionPending &&
-            _editorSubmissionRequestId > 0L &&
+            IsEditorSubmissionPending &&
             next.ResponseRequestId == _editorSubmissionRequestId;
         bool editorResponseSucceeded =
             editorResponseArrived && SubmittedProfileMatches(next);
@@ -455,9 +446,12 @@ internal static class ClanPanelController
         {
             RebuildView();
         }
-        else if (IsOpen && presentationChanged && !_editorOpen)
+        else if (IsOpen && presentationChanged)
         {
-            RefreshHeaderState();
+            if (!_editorOpen)
+            {
+                RefreshHeaderState();
+            }
             _clanRowsDirty = true;
             _peopleRowsDirty = true;
         }
@@ -475,9 +469,7 @@ internal static class ClanPanelController
         bool loadingStateChanged =
             IsOpen &&
             _directoryLoadingAtLastBuild != IsDirectoryLoading;
-        if (IsOpen &&
-            (presentationChanged || loadingStateChanged) &&
-            !_editorOpen)
+        if (IsOpen && (presentationChanged || loadingStateChanged))
         {
             _clanRowsDirty = true;
             if (_tab == PanelTab.Players)
@@ -624,6 +616,22 @@ internal static class ClanPanelController
         ClanUiFeedback.HideTooltip();
         ClearOwnedSelection();
         ClanUiFactory.ClearChildren(_root.transform);
+        ClearViewReferences();
+        _clanRowsDirty = false;
+        _peopleRowsDirty = false;
+        _directoryLoadingAtLastBuild = IsDirectoryLoading;
+
+        BuildHeader(_root.transform);
+        BuildOverview(_root.transform);
+        BuildPeoplePane(_root.transform);
+        if (_editorOpen)
+        {
+            BuildEditor(_root.transform);
+        }
+    }
+
+    private static void ClearViewReferences()
+    {
         _profileActionButton = null;
         _membersTabButton = null;
         _membersTabButtonLabel = null;
@@ -634,19 +642,10 @@ internal static class ClanPanelController
         _clanScrollContent = null;
         _peopleScroll = null;
         _peopleScrollContent = null;
-        _clanRowsDirty = false;
-        _peopleRowsDirty = false;
+        _editorEmblemScroll = null;
+        _selectedEmblemButton = null;
         _editorErrorBanner = null;
         _editorErrorLabel = null;
-        _directoryLoadingAtLastBuild = IsDirectoryLoading;
-
-        BuildHeader(_root.transform);
-        BuildOverview(_root.transform);
-        BuildPeoplePane(_root.transform);
-        if (_editorOpen)
-        {
-            BuildEditor(_root.transform);
-        }
     }
 
     private static void BuildHeader(Transform parent)
@@ -1900,7 +1899,7 @@ internal static class ClanPanelController
             AccentColor);
         Button saveButton = CreateButton(
             editor.transform,
-            _editorSubmissionPending
+            IsEditorSubmissionPending
                 ? ClanLocalization.Text("panel_editor_sending")
                 : _editorCreating
                     ? ClanLocalization.Text("panel_editor_create_clan")
@@ -1912,8 +1911,8 @@ internal static class ClanPanelController
             32f,
             ActiveButtonColor,
             12);
-        saveButton.interactable = !_editorSubmissionPending;
-        if (_editorSubmissionPending)
+        saveButton.interactable = !IsEditorSubmissionPending;
+        if (IsEditorSubmissionPending)
         {
             SetButtonLabelColor(saveButton, DisabledButtonLabelColor);
         }
@@ -1948,7 +1947,7 @@ internal static class ClanPanelController
             620f,
             34f,
             ClanDataRules.MaxClanNameLength * 2);
-        nameInput.interactable = !_editorSubmissionPending;
+        nameInput.interactable = !IsEditorSubmissionPending;
         nameInput.onValueChanged.AddListener(value =>
         {
             _draftName = value;
@@ -1975,7 +1974,7 @@ internal static class ClanPanelController
             620f,
             70f,
             ClanDataRules.MaxClanDescriptionLength);
-        descriptionInput.interactable = !_editorSubmissionPending;
+        descriptionInput.interactable = !IsEditorSubmissionPending;
         descriptionInput.onValueChanged.AddListener(value =>
         {
             _draftDescription = value;
@@ -2008,7 +2007,8 @@ internal static class ClanPanelController
             out RectTransform content,
             _emblemScrollPosition,
             value => _emblemScrollPosition = value);
-        scroll.enabled = !_editorSubmissionPending;
+        _editorEmblemScroll = scroll;
+        scroll.enabled = !IsEditorSubmissionPending;
         IReadOnlyList<ClanEmoji.ClanEmblemPickerItem> emblems = ClanEmoji.GetEmblemPickerItems();
         const int columns = 9;
         const float cell = 58f;
@@ -2016,10 +2016,11 @@ internal static class ClanPanelController
         int itemCount = emblems.Count + 1;
 
         bool noEmblemSelected = string.IsNullOrWhiteSpace(_draftEmblemKey);
-        Button none = CreateTopButton(
+        Button none = null!;
+        none = CreateTopButton(
             content,
             ClanLocalization.Text("common_none"),
-            () => SelectDraftEmblem(""),
+            () => SelectDraftEmblem("", none),
             5f,
             5f,
             cell,
@@ -2032,7 +2033,11 @@ internal static class ClanPanelController
         SetPickerButtonState(
             none,
             noEmblemSelected,
-            !_editorSubmissionPending);
+            !IsEditorSubmissionPending);
+        if (noEmblemSelected)
+        {
+            _selectedEmblemButton = none;
+        }
         ClanUiFeedback.SetTooltip(
             none,
             ClanLocalization.Text("panel_tooltip_no_emblem"));
@@ -2046,10 +2051,11 @@ internal static class ClanPanelController
             bool selected = StringComparer.Ordinal.Equals(
                 _draftEmblemKey,
                 emblem.Name);
-            Button button = CreateTopButton(
+            Button button = null!;
+            button = CreateTopButton(
                 content,
                 "",
-                () => SelectDraftEmblem(emblem.Name),
+                () => SelectDraftEmblem(emblem.Name, button),
                 5f + column * (cell + gap),
                 5f + row * (cell + gap),
                 cell,
@@ -2063,7 +2069,11 @@ internal static class ClanPanelController
             SetPickerButtonState(
                 button,
                 selected,
-                !_editorSubmissionPending);
+                !IsEditorSubmissionPending);
+            if (selected)
+            {
+                _selectedEmblemButton = button;
+            }
         }
 
         int rows = Math.Max(1, (itemCount + columns - 1) / columns);
@@ -2146,7 +2156,7 @@ internal static class ClanPanelController
 
     private static void SubmitEditor()
     {
-        if (_editorSubmissionPending)
+        if (IsEditorSubmissionPending)
         {
             return;
         }
@@ -2215,7 +2225,6 @@ internal static class ClanPanelController
 
             request.RequestId = ClanRpc.NextRequestId();
             _editorSubmissionRequestId = request.RequestId;
-            _editorSubmissionPending = true;
             RebuildView();
             if (!ClanRpc.Send(request))
             {
@@ -2236,7 +2245,6 @@ internal static class ClanPanelController
 
     private static void ClearEditorSubmission()
     {
-        _editorSubmissionPending = false;
         _editorSubmissionRequestId = 0L;
     }
 
@@ -2324,16 +2332,36 @@ internal static class ClanPanelController
                StringComparer.Ordinal.Equals(snapshot.ClanEmblemKey, _draftEmblemKey);
     }
 
-    private static void SelectDraftEmblem(string emblemKey)
+    private static void SelectDraftEmblem(string emblemKey, Button button)
     {
-        if (_editorSubmissionPending)
+        if (IsEditorSubmissionPending)
         {
             return;
         }
 
         _draftEmblemKey = emblemKey ?? "";
         ClearEditorError();
-        RebuildView();
+        if (_clanRowsDirty || _peopleRowsDirty ||
+            _directoryLoadingAtLastBuild != IsDirectoryLoading)
+        {
+            RebuildView();
+            return;
+        }
+        ClanUiFeedback.HideTooltip();
+        ClearOwnedSelection();
+        ClanUiFeedback.CancelTooltip(button);
+        if (_editorEmblemScroll != null)
+        {
+            _editorEmblemScroll.StopMovement();
+            _editorEmblemScroll.verticalNormalizedPosition =
+                Mathf.Clamp01(_emblemScrollPosition);
+        }
+        if (_selectedEmblemButton != null && _selectedEmblemButton != button)
+        {
+            SetPickerButtonState(_selectedEmblemButton, selected: false, interactable: true);
+        }
+        SetPickerButtonState(button, selected: true, interactable: true);
+        _selectedEmblemButton = button;
     }
 
     private static void SelectTab(PanelTab tab)
