@@ -142,6 +142,7 @@
         <Compile Include="ClanApi.cs"/>
         <Compile Include="ClanIdentity.cs"/>
         <Compile Include="ClanRegistry.cs"/>
+        <Compile Include="ClanRegistry.Persistence.cs"/>
         <Compile Include="ClanRpc.cs"/>
         <Compile Include="ClanMap.cs"/>
         <Compile Include="ClanHud.cs"/>

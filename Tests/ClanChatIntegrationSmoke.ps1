@@ -97,7 +97,7 @@ Assert-SourceOrder (Get-SourceBlock $registrySource 'private static ClanState Co
     'ClanApi.NotifyRegistryChanged();') 'profile commit replaces indexes before subscriber notifications'
 [xml] $clanProject = Get-Content -LiteralPath (Join-Path $clanRoot 'Clan.csproj') -Raw
 foreach ($compileItem in $clanProject.Project.ItemGroup.Compile) {
-    if (!$compileItem.Include -or $compileItem.Include -in @('ClanApi.cs', 'ClanRegistry.cs')) { continue }
+    if (!$compileItem.Include -or $compileItem.Include -in @('ClanApi.cs', 'ClanRegistry.cs', 'ClanRegistry.Persistence.cs')) { continue }
     $activeSource = Get-Content -LiteralPath (Join-Path $clanRoot $compileItem.Include) -Raw
     if ($activeSource.Contains('NotifyServerChatAccepted(')) {
         throw "Unexpected event emission outside server acceptance: $($compileItem.Include)"
