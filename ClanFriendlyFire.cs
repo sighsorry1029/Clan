@@ -30,7 +30,7 @@ internal static class ClanFriendlyFire
         return attackerRef.IsValid && ClanRpc.CurrentSnapshot.ContainsClanPlayer(attackerRef);
     }
 
-    [HarmonyPatch(typeof(Character), nameof(Character.RPC_Damage))]
+    [HarmonyPatch(typeof(Character), "RPC_Damage")]
     private static class DamagePatch
     {
         private static bool Prefix(Character __instance, HitData hit)
@@ -39,7 +39,7 @@ internal static class ClanFriendlyFire
         }
     }
 
-    [HarmonyPatch(typeof(Aoe), nameof(Aoe.OnHit))]
+    [HarmonyPatch(typeof(Aoe), "OnHit")]
     private static class FriendlyAoeScopePatch
     {
         private static void Prefix(Aoe __instance, Collider collider, out bool __state)
@@ -65,7 +65,7 @@ internal static class ClanFriendlyFire
         }
     }
 
-    [HarmonyPatch(typeof(Character), nameof(Character.FindWeakSpotIndex))]
+    [HarmonyPatch(typeof(Character), "FindWeakSpotIndex")]
     private static class MarkFriendlyAoePatch
     {
         private static void Postfix(ref short __result)

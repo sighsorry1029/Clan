@@ -1107,7 +1107,7 @@ internal static class ClanRpc
         return true;
     }
 
-    [HarmonyPatch(typeof(ZNet), nameof(ZNet.OnNewConnection))]
+    [HarmonyPatch(typeof(ZNet), "OnNewConnection")]
     private static class RegisterClanRpc
     {
         private static void Postfix(ZNet __instance, ZNetPeer peer)
@@ -1127,7 +1127,7 @@ internal static class ClanRpc
         }
     }
 
-    [HarmonyPatch(typeof(Game), nameof(Game.Start))]
+    [HarmonyPatch(typeof(Game), "Start")]
     private static class ResetClanSessionOnGameStart
     {
         private static void Postfix()

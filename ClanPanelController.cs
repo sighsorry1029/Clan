@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Jotunn.Managers;
+
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Events;
@@ -17,9 +17,47 @@ namespace Clan;
 /// </summary>
 internal static class ClanPanelController
 {
+    private sealed class ClanPanelDrag : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
+    {
+        private bool _dragging;
+        private Vector3 _offset;
+
+        public void OnBeginDrag(PointerEventData eventData)
+        {
+            _dragging = eventData.button == PointerEventData.InputButton.Left &&
+                        _rootRect != null && _overlayRoot != null;
+            if (!_dragging) return;
+            _dragging = RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                _overlayRoot, eventData.position, ClanUiFactory.GetCanvasCamera(_overlayRoot), out Vector3 point);
+            _offset = _rootRect!.position - point;
+        }
+
+        public void OnDrag(PointerEventData eventData)
+        {
+            if (!_dragging || _rootRect == null || _overlayRoot == null) return;
+            Camera? camera = ClanUiFactory.GetCanvasCamera(_overlayRoot);
+            if (RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                    _overlayRoot, eventData.position, camera, out Vector3 point))
+            {
+                _rootRect.position = point + _offset;
+                Rect safeArea = Screen.safeArea;
+                if (safeArea.width <= 0f || safeArea.height <= 0f)
+                    safeArea = new Rect(0f, 0f, Screen.width, Screen.height);
+                ClampCurrentPanelToSafeArea(safeArea, camera);
+            }
+        }
+
+        public void OnEndDrag(PointerEventData eventData) => _dragging = false;
+        private void OnDisable() => _dragging = false;
+    }
+
     private const float PanelWidth = 790f;
     private const float PanelHeight = 520f;
-    private const float PreferredPanelScale = 2f;
+    private const float LegacyPanelTransformScale = 2f;
+    private const float PreferredPanelScreenWidth =
+        PanelWidth * LegacyPanelTransformScale;
+    private const float PreferredPanelScreenHeight =
+        PanelHeight * LegacyPanelTransformScale;
     private const float SafeAreaGap = 8f;
     private const float MutationDirectoryRefreshDelay = 2.1f;
     private const float LeftPaneWidth = 358f;
@@ -213,6 +251,15 @@ internal static class ClanPanelController
 
     public static void Tick()
     {
+        if (!EnsureStandaloneView())
+        {
+            return;
+        }
+
+        if (IsOpen)
+        {
+            PositionPanel();
+        }
         RefreshMembersNotificationPulse();
 
         if (IsOpen && !_editorOpen)
@@ -241,6 +288,69 @@ internal static class ClanPanelController
         _directoryRefreshAt = ClanRpc.RequestDirectory() > 0L
             ? float.PositiveInfinity
             : Time.unscaledTime + MutationDirectoryRefreshDelay;
+    }
+
+    public static void Dispose()
+    {
+        DestroyView();
+    }
+
+    public static void RebuildStandaloneView(bool preserveInteractionState)
+    {
+        bool reopen = IsOpen;
+        if (!TryGetStandaloneHost(out Transform parent, out RectTransform overlayRoot))
+        {
+            DestroyView(preserveInteractionState);
+            return;
+        }
+
+        Build(parent, overlayRoot, preserveInteractionState);
+        if (reopen)
+        {
+            Toggle();
+        }
+    }
+
+    private static bool EnsureStandaloneView()
+    {
+        if (!TryGetStandaloneHost(out Transform parent, out RectTransform overlayRoot))
+        {
+            if (_root != null)
+            {
+                DestroyView();
+            }
+            return false;
+        }
+
+        if (_root == null ||
+            _overlayRoot != overlayRoot ||
+            _root.transform.parent != parent)
+        {
+            Build(parent, overlayRoot);
+        }
+        return _root != null;
+    }
+
+    private static bool TryGetStandaloneHost(
+        out Transform parent,
+        out RectTransform overlayRoot)
+    {
+        parent = null!;
+        overlayRoot = null!;
+        Hud? hud = Hud.instance;
+        if (ClanUiFactory.IsHeadless ||
+            !ClanUiFactory.ResourcesReady ||
+            ZNet.instance == null ||
+            Player.m_localPlayer == null ||
+            hud == null ||
+            hud.m_rootObject == null)
+        {
+            return false;
+        }
+
+        overlayRoot = ClanUiFactory.GetOverlayRoot(hud);
+        parent = overlayRoot.transform;
+        return true;
     }
 
     public static void DestroyView(bool preserveInteractionState = false)
@@ -354,15 +464,6 @@ internal static class ClanPanelController
                    _rootRect,
                    pointerPosition,
                    ClanUiFactory.GetCanvasCamera(_rootRect));
-    }
-
-    public static void RefreshPosition(RectTransform overlayRoot)
-    {
-        _overlayRoot = overlayRoot;
-        if (IsOpen)
-        {
-            PositionPanel();
-        }
     }
 
     public static void RefreshSnapshot(ClanClientSnapshot snapshot)
@@ -786,7 +887,7 @@ internal static class ClanPanelController
 
     private static void OpenClanMediaDirectory()
     {
-        if (GUIManager.IsHeadless() || ZNet.instance?.IsServer() != true)
+        if (ClanUiFactory.IsHeadless || ZNet.instance?.IsServer() != true)
         {
             return;
         }
@@ -3010,7 +3111,7 @@ internal static class ClanPanelController
         Image image = panel.GetComponent<Image>();
         try
         {
-            GUIManager.Instance.ApplyWoodpanelStyle(panel.transform);
+            ClanUiFactory.ApplyWoodpanelStyle(panel.transform);
         }
         catch (Exception ex)
         {
@@ -3024,7 +3125,7 @@ internal static class ClanPanelController
 
         if (draggable)
         {
-            panel.AddComponent<Jotunn.GUI.DragWindowCntrl>();
+            panel.AddComponent<ClanPanelDrag>();
         }
         return panel;
     }
@@ -3148,11 +3249,11 @@ internal static class ClanPanelController
     {
         try
         {
-            GUIManager.Instance.ApplyButtonStyle(button, fontSize);
+            ClanUiFactory.ApplyButtonStyle(button, fontSize);
         }
         catch (Exception)
         {
-            // The Jotunn GUI can be between instances during scene transitions.
+            // UI resources can be between instances during scene transitions.
         }
     }
 
@@ -3160,11 +3261,11 @@ internal static class ClanPanelController
     {
         try
         {
-            GUIManager.Instance.ApplyInputFieldStyle(input, fontSize);
+            ClanUiFactory.ApplyInputFieldStyle(input, fontSize);
         }
         catch (Exception)
         {
-            // The Jotunn GUI can be between instances during scene transitions.
+            // UI resources can be between instances during scene transitions.
         }
     }
 
@@ -3206,7 +3307,8 @@ internal static class ClanPanelController
         float availableWidth = Mathf.Max(1f, safeArea.width - SafeAreaGap * 2f);
         float availableHeight = Mathf.Max(1f, safeArea.height - SafeAreaGap * 2f);
         float scale = Mathf.Min(
-            PreferredPanelScale,
+            PreferredPanelScreenWidth / unscaledWidth,
+            PreferredPanelScreenHeight / unscaledHeight,
             availableWidth / unscaledWidth,
             availableHeight / unscaledHeight);
         scale = Mathf.Max(0.05f, scale);

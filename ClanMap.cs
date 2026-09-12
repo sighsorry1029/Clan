@@ -18,11 +18,14 @@ internal static class ClanMap
     private const float PositionHeartbeatInterval = 10f;
     private const string ClanPingHintName = "ClanPing";
     private const string PingHintName = "PingPanel";
+    private const string KoreanMapFontResourcePath =
+        "Fonts & Materials/Noto_Fallback_Fonts/Noto_Sans/NotoSansKR-Regular SDF";
 
     private static ConditionalWeakTable<Chat.WorldTextInstance, object> ClanPingTexts = new();
     private static readonly Dictionary<string, Vector3> ForcedPositions =
         new(StringComparer.Ordinal);
     private static readonly HashSet<string> ClanPlayerIds = new(StringComparer.Ordinal);
+    private static readonly HashSet<Minimap.PinData> ClanPlayerPins = new();
     private static readonly List<string> StalePositionIds = new();
     private static AccessTools.FieldRef<Minimap, List<Minimap.PinData>>? _pingPinsField =
         CreateMinimapFieldAccessor<List<Minimap.PinData>>("m_pingPins");
@@ -35,8 +38,11 @@ internal static class ClanMap
         _tempPlayerInfoField =
             CreateMinimapFieldAccessor<List<ZNet.PlayerInfo>>("m_tempPlayerInfo");
 
-    private static Sprite? _clanPlayerIcon;
     private static Sprite? _clanPingIcon;
+    private static ConditionalWeakTable<Minimap.PinData, TMP_FontAsset> OriginalMapFonts = new();
+    private static TMP_FontAsset? _koreanMapFont;
+    private static TMP_FontAsset? _mapFontWithKoreanFallback;
+    private static bool _koreanMapFontLookupAttempted;
     private static Minimap? _clanPingHintOwner;
     private static GameObject? _clanPingHint;
     private static TMP_Text? _clanPingHintLabel;
@@ -106,9 +112,16 @@ internal static class ClanMap
         ClanPlayerIds.Clear();
         RestoreClanIcons();
         DestroyClanPingHint();
-        DestroyGeneratedSprite(ref _clanPlayerIcon);
         DestroyGeneratedSprite(ref _clanPingIcon);
         ClanPingTexts = new ConditionalWeakTable<Chat.WorldTextInstance, object>();
+        OriginalMapFonts = new ConditionalWeakTable<Minimap.PinData, TMP_FontAsset>();
+        if (_mapFontWithKoreanFallback != null)
+        {
+            UnityEngine.Object.Destroy(_mapFontWithKoreanFallback);
+        }
+        _koreanMapFont = null;
+        _mapFontWithKoreanFallback = null;
+        _koreanMapFontLookupAttempted = false;
         _effectiveClanId = "";
         _positionSharingActive = false;
         ResetPositionTimer();
@@ -471,33 +484,171 @@ internal static class ClanMap
 
     private static void RestoreClanPlayerIcons()
     {
-        Minimap? minimap = Minimap.instance;
-        if (_clanPlayerIcon == null ||
-            minimap == null ||
-            !TryReadMinimapField(
-                minimap,
-                ref _playerPinsField,
-                "m_playerPins",
-                out List<Minimap.PinData> playerPins))
+        foreach (Minimap.PinData pin in ClanPlayerPins)
+        {
+            SetPlayerPinColor(pin, Color.white);
+            RestoreMapFont(pin);
+        }
+        ClanPlayerPins.Clear();
+    }
+
+    private static void SetPlayerPinColor(Minimap.PinData pin, Color color)
+    {
+        if (pin.m_iconElement != null)
+        {
+            pin.m_iconElement.color = color;
+        }
+    }
+
+    private static void ApplyKoreanMapFont(Minimap.PinData pin)
+    {
+        TMP_Text? label = pin.m_NamePinData?.PinNameText;
+        if (label == null)
+        {
+            return;
+        }
+        if (!ContainsHangul(label.text))
+        {
+            RestoreMapFont(pin);
+            return;
+        }
+        if (CanRenderHangul(label.font, label.text))
         {
             return;
         }
 
-        Sprite? defaultIcon = FindMinimapSprite(minimap, Minimap.PinType.Player);
-        if (defaultIcon == null)
+        TMP_FontAsset? mapFont = GetMapFontWithKoreanFallback(label.font, label.text);
+        if (mapFont == null)
         {
             return;
         }
 
-        foreach (Minimap.PinData pin in playerPins)
+        if (!OriginalMapFonts.TryGetValue(pin, out _) && label.font != null)
         {
-            if (pin.m_icon != _clanPlayerIcon)
+            OriginalMapFonts.Add(pin, label.font);
+        }
+        label.font = mapFont;
+    }
+
+    private static void RestoreMapFont(Minimap.PinData pin)
+    {
+        if (!OriginalMapFonts.TryGetValue(pin, out TMP_FontAsset originalFont))
+        {
+            return;
+        }
+
+        TMP_Text? label = pin.m_NamePinData?.PinNameText;
+        if (label != null && originalFont != null)
+        {
+            label.font = originalFont;
+        }
+        OriginalMapFonts.Remove(pin);
+    }
+
+    private static TMP_FontAsset? GetMapFontWithKoreanFallback(
+        TMP_FontAsset? originalFont,
+        string value)
+    {
+        if (originalFont == null)
+        {
+            return null;
+        }
+        if (_mapFontWithKoreanFallback != null)
+        {
+            return CanRenderHangul(_mapFontWithKoreanFallback, value)
+                ? _mapFontWithKoreanFallback
+                : null;
+        }
+
+        TMP_FontAsset? koreanFont = GetKoreanMapFont();
+        if (koreanFont == null || !CanRenderHangul(koreanFont, value))
+        {
+            return null;
+        }
+
+        _mapFontWithKoreanFallback = UnityEngine.Object.Instantiate(originalFont);
+        _mapFontWithKoreanFallback.name = "Clan Map Font With Korean Fallback";
+        List<TMP_FontAsset> fallbacks = originalFont.fallbackFontAssetTable == null
+            ? new List<TMP_FontAsset>()
+            : new List<TMP_FontAsset>(originalFont.fallbackFontAssetTable);
+        if (!fallbacks.Contains(koreanFont))
+        {
+            fallbacks.Add(koreanFont);
+        }
+        _mapFontWithKoreanFallback.fallbackFontAssetTable = fallbacks;
+        return _mapFontWithKoreanFallback;
+    }
+
+    private static TMP_FontAsset? GetKoreanMapFont()
+    {
+        if (_koreanMapFont != null)
+        {
+            return _koreanMapFont;
+        }
+        if (_koreanMapFontLookupAttempted)
+        {
+            return null;
+        }
+
+        _koreanMapFontLookupAttempted = true;
+        _koreanMapFont = Resources.Load<TMP_FontAsset>(KoreanMapFontResourcePath);
+        if (_koreanMapFont == null)
+        {
+            foreach (TMP_FontAsset font in Resources.FindObjectsOfTypeAll<TMP_FontAsset>())
             {
-                continue;
+                if (font.name == "NotoSansKR-Regular SDF")
+                {
+                    _koreanMapFont = font;
+                    break;
+                }
             }
-
-            SetPinAppearance(pin, defaultIcon, doubleSize: false);
         }
+
+        if (_koreanMapFont == null)
+        {
+            ClanPlugin.ClanLogger.LogWarning(
+                "The Korean map-label font could not be loaded; clan map names will use the vanilla font.");
+        }
+        return _koreanMapFont;
+    }
+
+    private static bool ContainsHangul(string value)
+    {
+        foreach (char character in value)
+        {
+            if (IsHangul(character))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool CanRenderHangul(TMP_FontAsset? font, string value)
+    {
+        if (font == null)
+        {
+            return false;
+        }
+
+        foreach (char character in value)
+        {
+            if (IsHangul(character) &&
+                !font.HasCharacter(character, searchFallbacks: true, tryAddCharacter: false))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsHangul(char character)
+    {
+        return character is >= '\u1100' and <= '\u11FF' or
+            >= '\u3130' and <= '\u318F' or
+            >= '\uA960' and <= '\uA97F' or
+            >= '\uAC00' and <= '\uD7A3' or
+            >= '\uD7B0' and <= '\uD7FF';
     }
 
     private static void SetPinAppearance(
@@ -583,7 +734,7 @@ internal static class ClanMap
 
     private static void EnsureSprites()
     {
-        if (_clanPlayerIcon != null && _clanPingIcon != null)
+        if (_clanPingIcon != null)
         {
             return;
         }
@@ -592,41 +743,7 @@ internal static class ClanMap
             return;
         }
 
-        _clanPlayerIcon ??= CreateCircleSprite(
-            "Clan Player Icon",
-            ClanUiFactory.GetClanColor(),
-            Color.white);
         _clanPingIcon ??= CreateDiamondSprite("Clan Ping Icon", ClanPingColor, Color.white);
-    }
-
-    private static Sprite CreateCircleSprite(string name, Color fill, Color accent)
-    {
-        const int size = 64;
-        Texture2D texture = new(size, size, TextureFormat.RGBA32, mipChain: false)
-        {
-            name = name + " Texture"
-        };
-        Color clear = new(0f, 0f, 0f, 0f);
-        Vector2 center = new((size - 1) / 2f, (size - 1) / 2f);
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                float distance = Vector2.Distance(new Vector2(x, y), center);
-                Color color = clear;
-                if (distance <= 27f)
-                {
-                    color = distance > 22f ? accent : fill;
-                }
-                if (distance <= 7f)
-                {
-                    color = accent;
-                }
-                texture.SetPixel(x, y, color);
-            }
-        }
-        texture.Apply();
-        return Sprite.Create(texture, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f), 100f);
     }
 
     private static Sprite CreateDiamondSprite(string name, Color fill, Color accent)
@@ -668,7 +785,7 @@ internal static class ClanMap
         }
     }
 
-    [HarmonyPatch(typeof(Chat), nameof(Chat.RPC_ChatMessage))]
+    [HarmonyPatch(typeof(Chat), "RPC_ChatMessage")]
     private static class ClearClanPingPatch
     {
         private static void Prefix(Chat __instance, long sender)
@@ -711,14 +828,12 @@ internal static class ClanMap
         }
     }
 
-    [HarmonyPatch(typeof(Minimap), nameof(Minimap.UpdatePlayerPins))]
+    [HarmonyPatch(typeof(Minimap), "UpdatePlayerPins")]
     private static class ClanMemberPinPatch
     {
         private static void Postfix(Minimap __instance)
         {
-            EnsureSprites();
-            if (_clanPlayerIcon == null ||
-                !TryReadMinimapField(
+            if (!TryReadMinimapField(
                     __instance,
                     ref _tempPlayerInfoField,
                     "m_tempPlayerInfo",
@@ -729,32 +844,50 @@ internal static class ClanMap
                     "m_playerPins",
                     out List<Minimap.PinData> playerPins))
             {
+                RestoreClanPlayerIcons();
                 return;
             }
 
             Sprite? defaultIcon = FindMinimapSprite(__instance, Minimap.PinType.Player);
             if (defaultIcon == null)
             {
+                RestoreClanPlayerIcons();
                 return;
             }
 
+            ClanPlayerPins.Clear();
+            Color clanColor = ClanUiFactory.GetClanColor();
             for (int i = 0; i < tempPlayerInfo.Count && i < playerPins.Count; i++)
             {
                 Minimap.PinData pin = playerPins[i];
                 ZNet.PlayerInfo player = tempPlayerInfo[i];
-                if (pin.m_name != player.m_name)
-                {
-                    continue;
-                }
-
                 if (IsClanPlayer(player))
                 {
-                    SetPinAppearance(pin, _clanPlayerIcon, doubleSize: true);
+                    SetPinAppearance(pin, defaultIcon, doubleSize: false);
+                    ClanPlayerPins.Add(pin);
+                    SetPlayerPinColor(pin, clanColor);
+                    ApplyKoreanMapFont(pin);
                 }
-                else if (pin.m_icon == _clanPlayerIcon)
+                else
                 {
                     SetPinAppearance(pin, defaultIcon, doubleSize: false);
+                    SetPlayerPinColor(pin, Color.white);
+                    RestoreMapFont(pin);
                 }
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Minimap), "UpdatePins")]
+    private static class ClanMemberPinVisualPatch
+    {
+        private static void Postfix()
+        {
+            Color clanColor = ClanUiFactory.GetClanColor();
+            foreach (Minimap.PinData pin in ClanPlayerPins)
+            {
+                SetPlayerPinColor(pin, clanColor);
+                ApplyKoreanMapFont(pin);
             }
         }
     }
@@ -824,7 +957,7 @@ internal static class ClanMap
         }
     }
 
-    [HarmonyPatch(typeof(Minimap), nameof(Minimap.UpdatePingPins))]
+    [HarmonyPatch(typeof(Minimap), "UpdatePingPins")]
     private static class ClanPingPinPatch
     {
         private static void Postfix(Minimap __instance)

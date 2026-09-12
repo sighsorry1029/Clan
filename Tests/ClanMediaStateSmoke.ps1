@@ -84,7 +84,7 @@ namespace $testNamespace
         public static ZNet? instance;
         public bool IsServer() => false;
     }
-    internal static class GUIManager { public static bool IsHeadless() => false; }
+    internal static class ClanUiFactory { public static bool IsHeadless => false; }
     internal static class Time { public static float realtimeSinceStartup; }
     internal static class ClanPlugin { public static readonly Logger ClanLogger = new(); }
     internal sealed class Logger

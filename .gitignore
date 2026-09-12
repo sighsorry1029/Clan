@@ -8,4 +8,5 @@ riderModule.iml
 *.sln.DotSettings.user
 /analysis/
 /DefaultMedia/
+/artifacts/
 /Thunderstore/*.zip

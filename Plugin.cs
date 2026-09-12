@@ -6,20 +6,18 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
-using Jotunn;
 using ServerSync;
 using UnityEngine;
 
 namespace Clan;
 
 [BepInPlugin(ModGUID, ModName, ModVersion)]
-[BepInDependency(Main.ModGuid)]
 [BepInIncompatibility("org.bepinex.plugins.groups")]
 [BepInIncompatibility("org.bepinex.plugins.guilds")]
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.0.4";
+    public const string ModVersion = "1.0.8";
     public const string Author = "sighsorry";
     public const string ModGUID = $"{Author}.{ModName}";
 
@@ -83,6 +81,7 @@ public sealed class ClanPlugin : BaseUnityPlugin
 
     private void Awake()
     {
+        ClanUiFactory.Initialize();
         ClanLocalization.Initialize(this, _harmony);
         BindConfiguration();
 
@@ -96,7 +95,7 @@ public sealed class ClanPlugin : BaseUnityPlugin
         ClanHud.Init();
         SetupWatcher();
 
-        ClanLogger.LogInfo($"{ModName} {ModVersion} loaded with Jotunn dependency {Main.ModGuid}.");
+        ClanLogger.LogInfo($"{ModName} {ModVersion} loaded for Valheim 1.0.");
     }
 
     private void BindConfiguration()
@@ -215,8 +214,10 @@ public sealed class ClanPlugin : BaseUnityPlugin
         DisposeWatcher();
         TryShutdown(() => SaveWithRespectToConfigSet(), "save configuration");
         TryShutdown(ClanVanillaChatDock.Dispose, "dispose chat dock");
+        TryShutdown(ClanPanelController.Dispose, "dispose Clan panel");
         TryShutdown(ClanHud.Dispose, "dispose HUD");
         TryShutdown(ClanUiFeedback.Dispose, "dispose UI feedback");
+        TryShutdown(ClanUiFactory.Dispose, "dispose UI resources");
         TryShutdown(ClanApi.Dispose, "dispose API");
         TryShutdown(ClanRecentPlayers.Dispose, "dispose recent-player storage");
         TryShutdown(ClanEmoji.Dispose, "dispose media runtime");
@@ -254,10 +255,12 @@ public sealed class ClanPlugin : BaseUnityPlugin
 
     private void Update()
     {
+        ClanUiFactory.Tick();
         ClanEmoji.Tick();
         ClanRpc.Tick();
         ClanApi.Tick();
         ClanRecentPlayers.Tick();
+        ClanPanelController.Tick();
         ClanVanillaChatDock.Tick();
         ClanHud.Tick();
         ClanMap.Tick();
@@ -351,7 +354,9 @@ internal static class ClanKeyboardExtensions
 
     public static bool IsKeyHeld(this KeyboardShortcut shortcut)
     {
-        return shortcut.MainKey != KeyCode.None && Input.GetKey(shortcut.MainKey) && shortcut.Modifiers.All(Input.GetKey);
+        return shortcut.MainKey != KeyCode.None &&
+               Input.GetKey(shortcut.MainKey) &&
+               shortcut.Modifiers.All(Input.GetKey);
     }
 }
 

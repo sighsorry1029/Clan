@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using Jotunn.Managers;
+
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -436,33 +436,11 @@ internal static class ClanUiFeedback
         out Transform host,
         out Canvas canvas)
     {
-        try
-        {
-            GameObject customFront = GUIManager.CustomGUIFront;
-            Canvas? customCanvas = customFront != null
-                ? customFront.GetComponentInParent<Canvas>()
-                : null;
-            if (customFront != null &&
-                customFront.activeInHierarchy &&
-                customFront.transform is RectTransform &&
-                customCanvas != null &&
-                customCanvas.isActiveAndEnabled)
-            {
-                host = customFront.transform;
-                canvas = customCanvas;
-                return true;
-            }
-        }
-        catch (Exception)
-        {
-            // Jotunn can be between GUI instances during a scene transition.
-        }
-
         Canvas? targetCanvas = target.GetComponentInParent<Canvas>();
         if (targetCanvas != null && targetCanvas.transform is RectTransform)
         {
-            host = targetCanvas.transform;
-            canvas = targetCanvas;
+            host = ClanUiFactory.GetOverlayRoot(target);
+            canvas = host.GetComponent<Canvas>();
             return true;
         }
 

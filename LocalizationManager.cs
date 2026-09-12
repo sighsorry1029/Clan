@@ -57,7 +57,7 @@ internal static class ClanLocalizationManager
             AccessTools.DeclaredMethod(typeof(Localization), nameof(Localization.SetupLanguage)),
             postfix: new HarmonyMethod(typeof(ClanLocalizationManager), nameof(AfterSetupLanguage)));
         harmony.Patch(
-            AccessTools.DeclaredMethod(typeof(FejdStartup), nameof(FejdStartup.SetupGui)),
+            AccessTools.DeclaredMethod(typeof(FejdStartup), "SetupGui"),
             postfix: new HarmonyMethod(typeof(ClanLocalizationManager), nameof(AfterSetupGui)));
 
         Localization? localization = Localization.instance;

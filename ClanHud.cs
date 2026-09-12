@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using Jotunn.Managers;
+using HarmonyLib;
+
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -10,6 +11,8 @@ namespace Clan;
 
 internal static class ClanHud
 {
+    private static readonly AccessTools.FieldRef<SplitDialog, RectTransform> SplitPanel =
+        AccessTools.FieldRefAccess<SplitDialog, RectTransform>("m_panel");
     private const int MaxDisplayedMembers = 10;
     private const float RequestIntervalSeconds = 0.5f;
     private const float HeaderHeight = 42f;
@@ -107,7 +110,6 @@ internal static class ClanHud
 
     public static void Init()
     {
-        GUIManager.OnCustomGUIAvailable += Rebuild;
         ClanRpc.SnapshotChanged += OnSnapshotChanged;
         ClanRpc.HudSnapshotChanged += OnHudSnapshotChanged;
         ClanPlugin.ClanHudPosition.SettingChanged += OnHudPositionChanged;
@@ -120,7 +122,6 @@ internal static class ClanHud
 
     public static void Dispose()
     {
-        GUIManager.OnCustomGUIAvailable -= Rebuild;
         ClanRpc.SnapshotChanged -= OnSnapshotChanged;
         ClanRpc.HudSnapshotChanged -= OnHudSnapshotChanged;
         ClanPlugin.ClanHudPosition.SettingChanged -= OnHudPositionChanged;
@@ -530,8 +531,8 @@ internal static class ClanHud
 
     private static void Rebuild(Transform? hudParent)
     {
-        if (GUIManager.IsHeadless() ||
-            hudParent == null)
+        if (ClanUiFactory.IsHeadless ||
+            hudParent == null || !ClanUiFactory.PrepareResources())
         {
             return;
         }
@@ -547,7 +548,7 @@ internal static class ClanHud
         Material? healthMaterial = null;
         try
         {
-            healthSprite = GUIManager.Instance.GetSprite("bar_gradient");
+            healthSprite = ClanUiFactory.GetSprite("bar_gradient");
         }
         catch (Exception)
         {
@@ -556,7 +557,7 @@ internal static class ClanHud
         try
         {
             healthMaterial =
-                PrefabManager.Cache.GetPrefab<Material>("lithud");
+                ClanUiFactory.GetMaterial("lithud");
         }
         catch (Exception)
         {
@@ -1069,7 +1070,7 @@ internal static class ClanHud
 
     private static bool HasReleasedCursor()
     {
-        return Cursor.visible && Cursor.lockState != CursorLockMode.Locked;
+        return ZCursor.IsVisible && ZCursor.LockState != CursorLockMode.Locked;
     }
 
     private static void UpdateHeaderRaycastState()
@@ -1245,7 +1246,9 @@ internal static class ClanHud
                ContainsPointerInActivePanel(inventory.m_variantDialog, pointerPosition) ||
                ContainsPointerInActivePanel(inventory.m_skillsDialog, pointerPosition) ||
                ContainsPointerInActivePanel(inventory.m_textsDialog, pointerPosition) ||
-               ContainsPointerInActivePanel(inventory.m_splitPanel, pointerPosition) ||
+               ContainsPointerInActivePanel(
+                   inventory.m_splitDialog != null && inventory.m_splitDialog.IsActive
+                       ? SplitPanel(inventory.m_splitDialog) : null, pointerPosition) ||
                ContainsPointerInActivePanel(inventory.m_trophiesPanel, pointerPosition);
     }
 
@@ -1506,8 +1509,8 @@ internal static class ClanHud
         Text text = textObject.GetComponent<Text>();
         text.text = value;
         text.font = bold
-            ? GUIManager.Instance.AveriaSerifBold
-            : GUIManager.Instance.AveriaSerif;
+            ? ClanUiFactory.GetFont(bold: true)
+            : ClanUiFactory.GetFont(bold: false);
         text.fontSize = size;
         text.alignment = anchor;
         text.color = color;

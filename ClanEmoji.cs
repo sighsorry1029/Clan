@@ -10,7 +10,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using HarmonyLib;
-using Jotunn.Managers;
+
 using ServerSync;
 using TMPro;
 using UnityEngine;
@@ -20,6 +20,12 @@ namespace Clan;
 
 internal static partial class ClanEmoji
 {
+    // Select the byte[] overload once: Unity 6 also exposes Span overloads that
+    // are not part of the net48 compilation surface. No per-image reflection.
+    private static readonly Func<Texture2D, byte[], bool> LoadPngImage =
+        (Func<Texture2D, byte[], bool>)Delegate.CreateDelegate(
+            typeof(Func<Texture2D, byte[], bool>),
+            typeof(ImageConversion).GetMethod("LoadImage", new[] { typeof(Texture2D), typeof(byte[]) })!);
     private const int MaximumEmojiFiles = 100;
     private const int MaximumPngFiles = MaximumEmojiFiles;
     private const int MaximumGifFiles = 50;
@@ -340,7 +346,7 @@ internal static partial class ClanEmoji
             LoadServerManifest(preserveLastGood: true);
         }
 
-        if (GUIManager.IsHeadless())
+        if (ClanUiFactory.IsHeadless)
         {
             return;
         }
@@ -596,7 +602,7 @@ internal static partial class ClanEmoji
                     ScheduleEmojiServerReloadRetry(
                         publishError,
                         retryAnyError: true);
-                    if (targetManifestWasAssigned && !GUIManager.IsHeadless())
+                    if (targetManifestWasAssigned && !ClanUiFactory.IsHeadless)
                     {
                         QueueManifest(manifest);
                     }
@@ -639,7 +645,7 @@ internal static partial class ClanEmoji
                     if (emptyManifestWasAssigned)
                     {
                         ClearEmojiServerCatalog();
-                        if (!GUIManager.IsHeadless())
+                        if (!ClanUiFactory.IsHeadless)
                         {
                             QueueManifest("");
                         }
@@ -653,7 +659,7 @@ internal static partial class ClanEmoji
             }
 
             ClearEmojiServerCatalog();
-            if (!GUIManager.IsHeadless())
+            if (!ClanUiFactory.IsHeadless)
             {
                 QueueManifest("");
             }
@@ -666,7 +672,7 @@ internal static partial class ClanEmoji
         {
             CommitEmojiServerCatalog(preparedCatalog);
         }
-        if ((catalogChanged || publishRetryPending) && !GUIManager.IsHeadless())
+        if ((catalogChanged || publishRetryPending) && !ClanUiFactory.IsHeadless)
         {
             QueueManifest(manifest);
         }
@@ -1404,7 +1410,7 @@ internal static partial class ClanEmoji
     {
         ZNet? currentSession = ZNet.instance;
         if (!_initialized ||
-            GUIManager.IsHeadless() ||
+            ClanUiFactory.IsHeadless ||
             currentSession == null ||
             currentSession.IsServer())
         {
@@ -1703,7 +1709,7 @@ internal static partial class ClanEmoji
                 anisoLevel = 0
             };
 
-            if (!Jotunn.Utils.AssetUtils.LoadImage(sourceTexture, data))
+            if (!LoadPngImage(sourceTexture, data))
             {
                 throw new InvalidDataException("Unity could not decode the PNG.");
             }

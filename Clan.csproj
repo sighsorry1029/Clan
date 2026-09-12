@@ -56,7 +56,6 @@
                 <BepInExPath Condition="!Exists('$(BepInExPath)')AND Exists('$(GamePath)')">$(GamePath)\BepInEx</BepInExPath>
                 <CorlibPath Condition="!Exists('$(CorlibPath)') AND Exists('$(GamePath)')">$(GamePath)\valheim_Data\Managed</CorlibPath>
                 <CorlibPath Condition="!Exists('$(CorlibPath)') AND Exists('$(GamePath)')">$(GamePath)\unstripped_corlib</CorlibPath>
-                <PublicizedAssembliesPath Condition="!Exists('$(PublicizedAssembliesPath)') AND Exists('$(GamePath)')">$(GamePath)\valheim_Data\Managed\publicized_assemblies</PublicizedAssembliesPath>
                 <AfterTargets Condition="'$(AfterTargets)' == ''">ILRepacker</AfterTargets>
             </PropertyGroup>
         </When>
@@ -66,13 +65,13 @@
             <HintPath>$(BepInExPath)\core\0Harmony.dll</HintPath>
         </Reference>
         <Reference Include="assembly_guiutils">
-            <HintPath>$(PublicizedAssembliesPath)\assembly_guiutils_publicized.dll</HintPath>
+            <HintPath>$(CorlibPath)\assembly_guiutils.dll</HintPath>
         </Reference>
         <Reference Include="assembly_utils">
-            <HintPath>$(PublicizedAssembliesPath)\assembly_utils_publicized.dll</HintPath>
+            <HintPath>$(CorlibPath)\assembly_utils.dll</HintPath>
         </Reference>
         <Reference Include="assembly_valheim">
-            <HintPath>$(PublicizedAssembliesPath)\assembly_valheim_publicized.dll</HintPath>
+            <HintPath>$(CorlibPath)\assembly_valheim.dll</HintPath>
         </Reference>
         <Reference Include="gui_framework">
             <HintPath>$(CorlibPath)\gui_framework.dll</HintPath>
@@ -80,9 +79,8 @@
         <Reference Include="BepInEx">
             <HintPath>$(BepInExPath)\core\BepInEx.dll</HintPath>
         </Reference>
-        <Reference Include="Jotunn">
-            <HintPath>$(JotunnPath)</HintPath>
-            <Private>False</Private>
+        <Reference Include="UnityEngine.ImageConversionModule">
+            <HintPath>$(CorlibPath)\UnityEngine.ImageConversionModule.dll</HintPath>
         </Reference>
         <Reference Include="netstandard">
             <HintPath>$(CorlibPath)\netstandard.dll</HintPath>
@@ -92,6 +90,10 @@
         </Reference>
         <Reference Include="Splatform">
             <HintPath>$(CorlibPath)\Splatform.dll</HintPath>
+        </Reference>
+        <Reference Include="SoftReferenceableAssets">
+            <HintPath>$(CorlibPath)\SoftReferenceableAssets.dll</HintPath>
+            <Private>False</Private>
         </Reference>
         <Reference Include="System"/>
         <Reference Include="System.Core"/>
@@ -190,11 +192,6 @@
         </PackageReference>
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
-    <Target Name="ValidateJotunnReference" BeforeTargets="ResolveAssemblyReferences">
-        <Error
-            Condition="'$(JotunnPath)' == '' Or !Exists('$(JotunnPath)')"
-            Text="Jotunn.dll was not found. Install Jotunn in BepInEx\plugins or build with /p:JotunnPath=&quot;absolute\path\to\Jotunn.dll&quot;."/>
-    </Target>
     <Target Name="GetAssemblyVersion" AfterTargets="ILRepacker">
         <GetAssemblyIdentity AssemblyFiles="$(TargetPath)">
             <Output TaskParameter="Assemblies" ItemName="Targets"/>

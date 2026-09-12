@@ -163,6 +163,8 @@ namespace $testNamespace
         private static void ShowEditorError(string value) => _editorError = value;
         private static void RefreshHeaderState() => _headerRefreshes++;
         private static void RefreshMembersNotificationPulse() { }
+        private static bool EnsureStandaloneView() => true;
+        private static void PositionPanel() { }
         private static void PopulateClanRows() { _clanPopulates++; _clanRowsDirty = false; }
         private static void PopulatePeopleRows() { _peoplePopulates++; _peopleRowsDirty = false; }
         private static void ClearOwnedSelection() { _selectionClears++; _inputFocused = false; }
