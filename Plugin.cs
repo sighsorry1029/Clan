@@ -17,7 +17,7 @@ namespace Clan;
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.0.8";
+    public const string ModVersion = "1.0.9";
     public const string Author = "sighsorry";
     public const string ModGUID = $"{Author}.{ModName}";
 
@@ -143,7 +143,7 @@ public sealed class ClanPlugin : BaseUnityPlugin
             ClanChatWindowScale = ConfigEntry(
                 "2 - UI",
                 "Clan Chat Window Scale",
-                2f,
+                1f,
                 new ConfigDescription(
                     "Uniform scale for the vanilla chat window, including text and inline emojis. The upper-left resize handle updates this value.",
                     new AcceptableValueRange<float>(1f, 2f)),
