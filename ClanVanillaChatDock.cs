@@ -133,6 +133,13 @@ internal static class ClanVanillaChatDock
     private static RectTransform? _emojiTrayRect;
     private static RectTransform? _resizeHandleRect;
     private static RectTransform? _chatPanelRect;
+    private static RectTransform? _chatSortingWindow;
+    private static Transform? _inventorySortingRoot;
+    private static Canvas? _chatSortingCanvas;
+    private static Canvas? _inventorySortingCanvas;
+    private static int _originalChatSortingLayer;
+    private static int _originalChatSortingOrder;
+    private static int _appliedChatSortingOrder;
     private static CanvasGroup? _clanButtonDockCanvasGroup;
     private static bool? _clanButtonDockInteractive;
     private static bool _canResizeChatPanel;
@@ -305,6 +312,7 @@ internal static class ClanVanillaChatDock
         input = GetInputField(chat);
         if (input == null)
         {
+            ReleaseChatCanvasOrder();
             RemoveChatFooterOffset();
             CancelPendingChatRefocus();
             CloseOverlays();
@@ -421,9 +429,7 @@ internal static class ClanVanillaChatDock
             DestroyRoot(preserveInteractionState);
 
             RectTransform inputRect = input.GetComponent<RectTransform>();
-            _chatPanelRect = ResolveChatPanelRect(inputRect);
-            _canResizeChatPanel = CanResizeDeclaredChatWindow(inputRect, _chatPanelRect);
-            RefreshChatScaleTarget(_chatPanelRect, _canResizeChatPanel);
+            RefreshChatPanelTarget(inputRect);
             Transform parent = GetOverlayParent(inputRect);
             _root = ClanUiFactory.CreateObject("ClanVanillaChatDock", parent);
             LayoutElement rootElement = _root.AddComponent<LayoutElement>();
@@ -508,6 +514,7 @@ internal static class ClanVanillaChatDock
 
     private static void DestroyRoot(bool preservePanelInteractionState = false)
     {
+        ReleaseChatCanvasOrder();
         RemoveChatFooterOffset();
         if (!preservePanelInteractionState)
         {
@@ -1853,6 +1860,7 @@ internal static class ClanVanillaChatDock
 
     private static void RefreshChatPanelTarget(RectTransform inputRect)
     {
+        RefreshChatCanvasOrder();
         RectTransform? target = ResolveChatPanelRect(inputRect);
         bool canResize = CanResizeDeclaredChatWindow(inputRect, target);
         if (_chatPanelRect != target || _canResizeChatPanel != canResize)
@@ -1861,6 +1869,69 @@ internal static class ClanVanillaChatDock
             _canResizeChatPanel = canResize;
         }
         RefreshChatScaleTarget(target, canResize);
+    }
+
+    private static void RefreshChatCanvasOrder()
+    {
+        RectTransform? window = Chat.instance != null ? ((Terminal)Chat.instance).m_chatWindow : null;
+        Transform? inventoryRoot = InventoryGui.instance != null ? InventoryGui.instance.m_inventoryRoot : null;
+        if (window == null || inventoryRoot == null)
+        {
+            ReleaseChatCanvasOrder();
+            return;
+        }
+
+        if (_chatSortingWindow != window || _inventorySortingRoot != inventoryRoot ||
+            _chatSortingCanvas == null || _inventorySortingCanvas == null)
+        {
+            ReleaseChatCanvasOrder();
+            _chatSortingWindow = window;
+            _inventorySortingRoot = inventoryRoot;
+            // Only borrow the declared chat window's own Canvas. Falling back to
+            // a parent could change the order of unrelated HUD or world text.
+            _chatSortingCanvas = window.GetComponent<Canvas>();
+            _inventorySortingCanvas = inventoryRoot.GetComponentInParent<Canvas>(true);
+            if (_chatSortingCanvas != null)
+            {
+                _originalChatSortingLayer = _chatSortingCanvas.sortingLayerID;
+                _originalChatSortingOrder = _appliedChatSortingOrder = _chatSortingCanvas.sortingOrder;
+            }
+        }
+
+        if (_chatSortingCanvas == null || _inventorySortingCanvas == null ||
+            _chatSortingCanvas == _inventorySortingCanvas ||
+            !_chatSortingCanvas.overrideSorting || !_inventorySortingCanvas.overrideSorting ||
+            _chatSortingCanvas.sortingLayerID != _inventorySortingCanvas.sortingLayerID ||
+            _chatSortingCanvas.sortingLayerID != _originalChatSortingLayer ||
+            _chatSortingCanvas.sortingOrder != _appliedChatSortingOrder ||
+            _inventorySortingCanvas.sortingOrder <= short.MinValue)
+        {
+            return;
+        }
+
+        // Valheim 1.0.12 places Chat_box at 900 and Inventory_screen at 600.
+        // Use the live inventory order and leave already-lower chat layers alone.
+        int order = Math.Min(_originalChatSortingOrder, _inventorySortingCanvas.sortingOrder - 1);
+        if (_appliedChatSortingOrder != order)
+        {
+            _chatSortingCanvas.sortingOrder = _appliedChatSortingOrder = order;
+        }
+    }
+
+    private static void ReleaseChatCanvasOrder()
+    {
+        // Restore only our own last write; do not undo a later change by another mod.
+        if (_chatSortingCanvas != null &&
+            _chatSortingCanvas.sortingLayerID == _originalChatSortingLayer &&
+            _chatSortingCanvas.sortingOrder == _appliedChatSortingOrder &&
+            _appliedChatSortingOrder != _originalChatSortingOrder)
+        {
+            _chatSortingCanvas.sortingOrder = _originalChatSortingOrder;
+        }
+        _chatSortingWindow = null;
+        _inventorySortingRoot = null;
+        _chatSortingCanvas = null;
+        _inventorySortingCanvas = null;
     }
 
     private static Rect ResolveChatPlacementBounds(
@@ -2192,10 +2263,8 @@ internal static class ClanVanillaChatDock
 
         if (InventoryGui.IsVisible())
         {
-            // The inventory and crafting panels share the HUD canvas with the
-            // vanilla chat. Keep the configured scale, but temporarily restore
-            // the chat transform while that foreground UI is visible so an
-            // enlarged chat cannot cover its controls.
+            // Preserve the existing compact layout while inventory is visible.
+            // Canvas ordering separately keeps chat behind crafting controls.
             SetChatScale(MinimumChatScale);
             return;
         }

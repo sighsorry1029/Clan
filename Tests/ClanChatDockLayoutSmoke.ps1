@@ -1,8 +1,8 @@
 #requires -Version 7.0
 <#
-Compiles the production footer-scale decision against a small Mathf substitute and
-checks the shortcut/dock ordering in source. Unity transforms and rendering still
-require an in-game check.
+Compiles production footer-scale and borrowed Canvas-order decisions against small
+substitutes and checks shortcut/dock lifecycle wiring in source. Unity transforms,
+rendering, raycasts and destroyed-object null semantics still require an in-game check.
 #>
 [CmdletBinding()]
 param()
@@ -116,4 +116,131 @@ Assert-True ([Math]::Abs([float]$fit.Invoke($null, @([float]2, [float]64, [float
 Assert-True ([Math]::Abs([float]$fit.Invoke($null, @([float]1.6, [float]80, [float]40)) - 1.6) -lt 0.0001) 'A footer that already fits must retain its requested scale.'
 Assert-True ([Math]::Abs([float]$fit.Invoke($null, @([float]2, [float]0, [float]40)) - 0.05) -lt 0.0001) 'A footer with no lower margin must remain finite.'
 
-Write-Host 'PASS: chat footer scaling and independent UI-readiness shortcut contracts passed.'
+$refreshTarget = Get-SourceBlock $source 'private static void RefreshChatPanelTarget('
+Assert-True ($refreshTarget.Contains('RefreshChatCanvasOrder();') -and $rebuild.Contains('RefreshChatPanelTarget(inputRect);')) 'Initial attachment and inactive-chat updates must both refresh the borrowed chat Canvas order.'
+Assert-True ($destroyDock.Contains('ReleaseChatCanvasOrder();') -and $dispose.Contains('DestroyRoot();')) 'Dock teardown and plugin disposal must restore the borrowed chat Canvas order.'
+
+$canvasMethods = @(
+    'private static void RefreshChatCanvasOrder()',
+    'private static void ReleaseChatCanvasOrder()'
+) | ForEach-Object { Get-SourceBlock $source $_ }
+$canvasFields = [regex]::Matches($source, '(?m)^    private static [^\r\n]+ (?:_chatSortingWindow|_inventorySortingRoot|_chatSortingCanvas|_inventorySortingCanvas|_originalChatSortingLayer|_originalChatSortingOrder|_appliedChatSortingOrder);\r?$') |
+    ForEach-Object { $_.Value }
+$canvasNamespace = 'ClanChatCanvasSmoke_' + [Guid]::NewGuid().ToString('N')
+Add-Type -Language CSharp -TypeDefinition @"
+#nullable enable
+using System;
+namespace $canvasNamespace {
+    public class Canvas {
+        public bool overrideSorting = true;
+        public int sortingLayerID;
+        private int order;
+        public int Writes;
+        public int sortingOrder { get => order; set { order = value; Writes++; } }
+    }
+    public class Transform {
+        public Canvas? OwnCanvas, ParentCanvas;
+        public bool Active;
+        public static int Searches;
+        public T? GetComponent<T>() where T : class { Searches++; return OwnCanvas as T; }
+        public T? GetComponentInParent<T>(bool includeInactive) where T : class {
+            Searches++;
+            return Active || includeInactive ? (OwnCanvas ?? ParentCanvas) as T : null;
+        }
+    }
+    public class RectTransform : Transform { }
+    public class Terminal { public RectTransform? m_chatWindow; }
+    public class Chat : Terminal { public static Chat? instance; }
+    public class InventoryGui { public static InventoryGui? instance; public Transform? m_inventoryRoot; }
+    public static class Harness {
+        $($canvasFields -join "`n")
+        $($canvasMethods -join "`n")
+        private static int checks;
+        private static void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; }
+        public static int Run() {
+            RefreshChatCanvasOrder();
+            Check(Transform.Searches == 0, "Missing UI must not perform component searches");
+            var chat = new Canvas { sortingOrder = 900 };
+            var inventory = new Canvas { sortingOrder = 600 };
+            var window = new RectTransform { OwnCanvas = chat };
+            var inventoryRoot = new Transform { ParentCanvas = inventory };
+            Chat.instance = new Chat { m_chatWindow = window };
+            InventoryGui.instance = new InventoryGui { m_inventoryRoot = inventoryRoot };
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 599 && inventory.sortingOrder == 600, "Inactive chat must be below crafting before either panel opens");
+            int searches = Transform.Searches, writes = chat.Writes;
+            for (int i = 0; i < 100; i++) RefreshChatCanvasOrder();
+            Check(Transform.Searches == searches && chat.Writes == writes, "Stable frames must not search components or rewrite Canvas order");
+            window.Active = inventoryRoot.Active = true;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 599 && Transform.Searches == searches, "Opening chat or inventory must retain the prepared order");
+            inventory.sortingOrder = 450;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 449, "Use live inventory order instead of a hard-coded 599");
+            var nextChat = new Canvas { sortingOrder = 950 };
+            Chat.instance = new Chat { m_chatWindow = new RectTransform { OwnCanvas = nextChat } };
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 900 && nextChat.sortingOrder == 449, "Window replacement must restore the old Canvas and adjust the new one");
+            var nextInventory = new Canvas { sortingOrder = 700 };
+            InventoryGui.instance = new InventoryGui { m_inventoryRoot = new Transform { ParentCanvas = nextInventory } };
+            RefreshChatCanvasOrder();
+            Check(nextChat.sortingOrder == 699, "Inventory replacement must refresh its cached Canvas");
+            InventoryGui.instance = null;
+            RefreshChatCanvasOrder();
+            Check(nextChat.sortingOrder == 950, "Losing inventory UI must restore chat order");
+            Chat.instance.m_chatWindow = window;
+            InventoryGui.instance = new InventoryGui { m_inventoryRoot = inventoryRoot };
+            inventory.sortingOrder = 600;
+            RefreshChatCanvasOrder();
+            ReleaseChatCanvasOrder();
+            Check(chat.sortingOrder == 900, "Teardown must restore the original order");
+            chat.sortingOrder = 200;
+            writes = chat.Writes;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 200 && chat.Writes == writes, "Already-lower chat must not be raised");
+            ReleaseChatCanvasOrder();
+            chat.sortingOrder = 900;
+            RefreshChatCanvasOrder();
+            chat.sortingOrder = 850;
+            RefreshChatCanvasOrder();
+            ReleaseChatCanvasOrder();
+            Check(chat.sortingOrder == 850, "Do not overwrite another mod's later order change");
+            chat.sortingOrder = 900;
+            RefreshChatCanvasOrder();
+            chat.sortingLayerID = 10;
+            RefreshChatCanvasOrder();
+            ReleaseChatCanvasOrder();
+            Check(chat.sortingOrder == 599 && chat.sortingLayerID == 10, "Do not undo another mod's later layer change");
+            chat.sortingOrder = 900;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 900, "Different sorting layers must be left alone");
+            ReleaseChatCanvasOrder();
+            chat.sortingLayerID = 0;
+            chat.overrideSorting = false;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 900 && !chat.overrideSorting, "Do not enable independent sorting on a shared hierarchy");
+            ReleaseChatCanvasOrder();
+            chat.overrideSorting = true;
+            inventoryRoot.ParentCanvas = chat;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 900, "A Canvas shared by chat and inventory must not be changed");
+            ReleaseChatCanvasOrder();
+            inventoryRoot.ParentCanvas = inventory;
+            window.OwnCanvas = null;
+            window.ParentCanvas = chat;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 900, "Chat must not fall back to an unrelated parent Canvas");
+            ReleaseChatCanvasOrder();
+            window.OwnCanvas = chat;
+            inventory.sortingOrder = short.MinValue;
+            RefreshChatCanvasOrder();
+            Check(chat.sortingOrder == 900, "Canvas order must not wrap beyond Unity's signed 16-bit range");
+            ReleaseChatCanvasOrder();
+            return checks;
+        }
+    }
+}
+"@
+$canvasType = ([System.Management.Automation.PSTypeName]"$canvasNamespace.Harness").Type
+$canvasChecks = $canvasType.GetMethod('Run').Invoke($null, @())
+Write-Host "PASS: chat footer scaling, independent UI-readiness shortcuts and $canvasChecks borrowed Canvas-order checks passed."
