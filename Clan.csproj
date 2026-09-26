@@ -156,6 +156,9 @@
         <Compile Include="ClanRecentPlayers.cs"/>
         <Compile Include="ClanPanelController.cs"/>
         <Compile Include="ClanFriendlyFire.cs"/>
+        <Compile Include="ClanGroupSharing.cs"/>
+        <Compile Include="EpicMmoCompat.cs"/>
+        <Compile Include="QuestForgeCompat.cs"/>
         <Compile Include="ClanVanillaChatDock.cs"/>
         <Compile Include="Plugin.cs"/>
         <Compile Include="Properties\AssemblyInfo.cs"/>

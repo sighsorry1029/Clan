@@ -11,6 +11,8 @@ pwsh -NoProfile -File Tests/ClanChatDockLayoutSmoke.ps1
 pwsh -NoProfile -File Tests/ClanUiResourceSmoke.ps1
 pwsh -NoProfile -File Tests/ClanValheim1Compatibility.ps1
 pwsh -NoProfile -File Tests/ServerSyncAdaptationSmoke.ps1
+pwsh -NoProfile -File Tests/ClanGroupSharingSmoke.ps1
+pwsh -NoProfile -File Tests/ClanOptionalCompatContracts.ps1
 ```
 
 The first four scripts execute selected production method bodies with controlled game/Unity substitutes. The resource test covers delayed discovery, caching, headless execution, atlas copy ownership, scene changes, event cleanup, and balanced game asset references. It does not load real game assets or render the UI.
@@ -18,6 +20,12 @@ The first four scripts execute selected production method bodies with controlled
 The compatibility script examines the actual final DLL against client and dedicated-server original assemblies. It checks game member access, declared Harmony targets, specific reflection contracts, and removal of Jotunn. Path parameters can be overridden. It requires Mono.Cecil 0.11.6 (or its explicit DLL path). It does not apply Harmony patches or execute Unity.
 
 The ServerSync comparison reads the original library from Git commit 63f89c3 and verifies that the adapted library changes only the three reviewed static field reads, retaining method identities, other instructions, and exception boundaries. See `Libs/ServerSync-compatibility.md` for reproduction.
+
+`ClanGroupSharingSmoke.ps1` compiles the entire production group-credit transport with controlled game/network/consumer substitutes. Its 38 checks cover effective membership, Guest precedence, host delivery, caller/character/owner validation, malformed messages, range, live settings, sequence/death replay protection, bounded caches, rate windows and session reset. It does not execute either external mod.
+
+`ClanOptionalCompatContracts.ps1` accepts paths to the original optional DLLs. It verifies WackyEpicMMOSystem 1.9.68 and RtDQuestForge 0.2.13 contracts and executes the production Epic matcher/transpiler on original IL converted through Cecil to reflection instructions. It checks that only the five intended instructions are added and original instructions, branch labels and exception markers survive. Ambiguous input is rejected. It does not install a live Harmony detour or execute game/XP/reward code; the conversion handles the reviewed method's single finally block, not arbitrary assemblies.
+
+For optional sharing, run local-host and dedicated-server tests with the same Clan build on all participants (including creature owners). Cover killer/owner differences, fast spawn/death, owner transfer, delayed events, same display names, Guest changes, death/respawn and reconnect. Check Epic curves/Mentor/XP potions, bosses/stars/DoT/tamed summons/PvP, and QuestForge accepted/unaccepted/completed quests, personal rewards and full inventories. See `docs/RTDQUESTFORGE_HANDOFF.md` for the upstream boundaries and known limitations.
 
 Before release, run a real 1.0.12 client without Jotunn, then a local host and a dedicated server with a remote client. Verify:
 

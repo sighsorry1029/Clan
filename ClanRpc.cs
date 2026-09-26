@@ -967,6 +967,8 @@ internal static class ClanRpc
         HudRequestBudgets.Clear();
         MutationRequestBudgets.Clear();
         PeerIdentities.Clear();
+        ClanGroupSharing.ResetSession();
+        QuestForgeCompat.ResetSession();
         ClanApi.ResetSession();
         ClanRegistry.ResetOnlinePresence();
         ClanMap.ResetSession();
@@ -1113,6 +1115,7 @@ internal static class ClanRpc
         private static void Postfix(ZNet __instance, ZNetPeer peer)
         {
             ClanEmoji.RegisterEmojiFileRpc(__instance, peer);
+            ClanGroupSharing.RegisterPeer(__instance, peer);
 
             if (__instance.IsServer())
             {
@@ -1145,6 +1148,16 @@ internal static class ClanRpc
         }
     }
 
+    [HarmonyPatch(typeof(ZNet), nameof(ZNet.ShutdownWithoutSave), typeof(bool))]
+    private static class ClearGroupSharingWithoutSave
+    {
+        private static void Prefix()
+        {
+            ClanGroupSharing.ResetSession();
+            QuestForgeCompat.ResetSession();
+        }
+    }
+
     [HarmonyPatch(typeof(ZNet), nameof(ZNet.Disconnect), typeof(ZNetPeer))]
     private static class ClearEmojiPeerOnDisconnect
     {
@@ -1162,6 +1175,7 @@ internal static class ClanRpc
                     : default;
             }
             ClanEmoji.ForgetEmojiPeer(peer?.m_rpc);
+            ClanGroupSharing.ForgetPeer(peer?.m_rpc);
             if (peer?.m_rpc != null)
             {
                 DirectoryRequestBudgets.Remove(peer.m_rpc);

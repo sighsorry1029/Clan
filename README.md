@@ -69,6 +69,22 @@ While a Guest connection is active, the Guest clan is used for clan chat, HUD, p
 
 Accepted applications and invitations always start as `Guest`. Leaders and officers can manage eligible players from the roster; leadership transfer and clan profile management remain leader-only.
 
+## Optional combat and quest compatibility
+
+Install the same Clan build and the relevant optional mod on the server and participating clients, including clients that own nearby creatures. The reviewed versions are **WackyEpicMMOSystem 1.9.68** and **RtDQuestForge 0.2.13**. Other versions disable the corresponding adapter with a startup warning until their contracts are reviewed. Clan does not bundle either mod or require Jotunn; QuestForge retains its own dependencies.
+
+Server-synchronized settings in `3 - Compatibility`:
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| Share Epic MMO Experience | On | Shares combat XP with other online members of the effective clan, retaining Epic's group multiplier, recipient range, level curves and XP modifiers. |
+| Share QuestForge Kills | On | Adds kill objective credit to nearby living clan members. Each player must accept their own quests; gathering, rewards and progress saves remain personal. |
+| QuestForge Share Range | 70 | Maximum distance in metres from the killed creature for additional quest credit. |
+
+Guest membership takes precedence over primary membership for both features. No credit is sent to both clans, and the original killer is excluded from additional credit. These features do not add a separate temporary-party system or change Clan's existing incompatibility with Groups.
+
+The relay checks connected identities and server-side clan membership. Quest reports also check the creature owner, prefab and death ID; very late reports or unrecognized ownership are rejected. Epic's native combat report has no unique death ID, so the relay rejects duplicate transport sequences but cannot identify independently repeated native kill reports. These checks do not make third-party combat or reward systems fully server-authoritative.
+
 ## Custom emoji and emblems
 
 The authoritative server loads media from:
@@ -122,7 +138,7 @@ Main defaults are:
 | Clan Friendly Fire | `On` | Server-synchronized |
 | Share Clan Positions | `On` | Server-synchronized |
 | Clan Ping Modifier Key | `Left Shift` | Client |
-| Clan Chat Window Scale | `2` (`1`–`2`) | Client |
+| Clan Chat Window Scale | `1` (`1`–`2`) | Client |
 | Clan Panel Shortcut | `J` | Client |
 | Emoji Panel Shortcut | `H` | Client |
 | Chat After Send | `KeepOpen` | Client |

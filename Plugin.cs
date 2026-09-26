@@ -14,10 +14,12 @@ namespace Clan;
 [BepInPlugin(ModGUID, ModName, ModVersion)]
 [BepInIncompatibility("org.bepinex.plugins.groups")]
 [BepInIncompatibility("org.bepinex.plugins.guilds")]
+[BepInDependency(EpicMmoCompat.PluginGuid, BepInDependency.DependencyFlags.SoftDependency)]
+[BepInDependency(QuestForgeCompat.PluginGuid, BepInDependency.DependencyFlags.SoftDependency)]
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.0.10";
+    public const string ModVersion = "1.1.0";
     public const string Author = "sighsorry";
     public const string ModGUID = $"{Author}.{ModName}";
 
@@ -43,6 +45,9 @@ public sealed class ClanPlugin : BaseUnityPlugin
     internal static ConfigEntry<Toggle> ShowClanHud = null!;
     internal static ConfigEntry<Toggle> ClanHudPlayerListCollapsed = null!;
     internal static ConfigEntry<Vector2> ClanHudPosition = null!;
+    internal static ConfigEntry<Toggle> ShareEpicMmoExperience = null!;
+    internal static ConfigEntry<Toggle> ShareQuestForgeKills = null!;
+    internal static ConfigEntry<float> QuestForgeShareRange = null!;
 
     private static readonly ConfigSync ConfigSync = new(ModGUID)
     {
@@ -91,6 +96,8 @@ public sealed class ClanPlugin : BaseUnityPlugin
         ClanApi.Initialize();
 
         _harmony.PatchAll(Assembly.GetExecutingAssembly());
+        EpicMmoCompat.Initialize(_harmony);
+        QuestForgeCompat.Initialize(_harmony);
         ClanVanillaChatDock.Init();
         ClanHud.Init();
         SetupWatcher();
@@ -201,6 +208,17 @@ public sealed class ClanPlugin : BaseUnityPlugin
                 "Normalized safe-area position of the Clan HUD's upper-left corner. Drag the Clan header to update it.",
                 synchronizedSetting: false);
 
+            ShareEpicMmoExperience = ConfigEntry(
+                "3 - Compatibility", "Share Epic MMO Experience", Toggle.On,
+                "Share combat XP with online members of the effective clan when WackyEpicMMOSystem is installed. Preserves its group multiplier, range and level rules.");
+            ShareQuestForgeKills = ConfigEntry(
+                "3 - Compatibility", "Share QuestForge Kills", Toggle.On,
+                "Share kill objective credit with nearby living members of the effective clan when RtDQuestForge is installed. Each player must accept their own quests; rewards and gathering remain personal.");
+            QuestForgeShareRange = ConfigEntry(
+                "3 - Compatibility", "QuestForge Share Range", 70f,
+                new ConfigDescription("Maximum distance from the killed creature for shared quest credit.",
+                    new AcceptableValueRange<float>(1f, 200f)));
+
             Config.Save();
         }
         finally
@@ -212,6 +230,9 @@ public sealed class ClanPlugin : BaseUnityPlugin
     private void OnDestroy()
     {
         DisposeWatcher();
+        TryShutdown(ClanGroupSharing.ResetSession, "reset group sharing");
+        TryShutdown(EpicMmoCompat.Dispose, "dispose Epic MMO compatibility");
+        TryShutdown(QuestForgeCompat.Dispose, "dispose QuestForge compatibility");
         TryShutdown(() => SaveWithRespectToConfigSet(), "save configuration");
         TryShutdown(ClanVanillaChatDock.Dispose, "dispose chat dock");
         TryShutdown(ClanPanelController.Dispose, "dispose Clan panel");
