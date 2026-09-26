@@ -19,7 +19,7 @@ namespace Clan;
 public sealed class ClanPlugin : BaseUnityPlugin
 {
     public const string ModName = "Clan";
-    public const string ModVersion = "1.1.0";
+    public const string ModVersion = "1.1.1";
     public const string Author = "sighsorry";
     public const string ModGUID = $"{Author}.{ModName}";
 
@@ -60,11 +60,14 @@ public sealed class ClanPlugin : BaseUnityPlugin
     private static readonly string ConfigFileFullPath = Paths.ConfigPath + Path.DirectorySeparatorChar + ConfigFileName;
 
     private readonly Harmony _harmony = new(ModGUID);
-    private readonly object _reloadLock = new();
     private FileSystemWatcher? _watcher;
-    private DateTime _lastConfigReloadTime;
+    private string? _lastConfigContent;
+    private bool _configReloadPending;
+    private DateTime _configReloadAfter;
+    private int _configReloadFailures;
 
-    private const long ReloadDelayTicks = TimeSpan.TicksPerSecond;
+    private const int ConfigReloadDelayMilliseconds = 250;
+    private const int ConfigReloadRetryLimit = 4;
 
     public enum Toggle
     {
@@ -233,7 +236,7 @@ public sealed class ClanPlugin : BaseUnityPlugin
         TryShutdown(ClanGroupSharing.ResetSession, "reset group sharing");
         TryShutdown(EpicMmoCompat.Dispose, "dispose Epic MMO compatibility");
         TryShutdown(QuestForgeCompat.Dispose, "dispose QuestForge compatibility");
-        TryShutdown(() => SaveWithRespectToConfigSet(), "save configuration");
+        TryShutdown(Config.Save, "save configuration");
         TryShutdown(ClanVanillaChatDock.Dispose, "dispose chat dock");
         TryShutdown(ClanPanelController.Dispose, "dispose Clan panel");
         TryShutdown(ClanHud.Dispose, "dispose HUD");
@@ -251,6 +254,9 @@ public sealed class ClanPlugin : BaseUnityPlugin
     {
         FileSystemWatcher? watcher = _watcher;
         _watcher = null;
+        Config.SettingChanged -= InvalidateConfigSnapshot;
+        _configReloadPending = false;
+        _lastConfigContent = null;
         if (watcher == null)
         {
             return;
@@ -276,6 +282,7 @@ public sealed class ClanPlugin : BaseUnityPlugin
 
     private void Update()
     {
+        ReloadPendingConfig();
         ClanUiFactory.Tick();
         ClanEmoji.Tick();
         ClanRpc.Tick();
@@ -293,55 +300,92 @@ public sealed class ClanPlugin : BaseUnityPlugin
         _watcher.Changed += ReadConfigValues;
         _watcher.Created += ReadConfigValues;
         _watcher.Renamed += ReadConfigValues;
+        _watcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size;
+        // Both watcher callbacks and ReloadPendingConfig run on the Unity main thread.
         _watcher.SynchronizingObject = ThreadingHelper.SynchronizingObject;
+        Config.SettingChanged += InvalidateConfigSnapshot;
         _watcher.EnableRaisingEvents = true;
+    }
+
+    private void InvalidateConfigSnapshot(object sender, SettingChangedEventArgs e)
+    {
+        // An in-game change can be saved and externally reverted before the next
+        // watcher tick. Matching old file bytes must not hide that external edit.
+        _lastConfigContent = null;
     }
 
     private void ReadConfigValues(object sender, FileSystemEventArgs e)
     {
-        DateTime now = DateTime.Now;
-        if (now.Ticks - _lastConfigReloadTime.Ticks < ReloadDelayTicks)
+        // A callback already queued by ThreadingHelper can outlive the watcher.
+        if (!ReferenceEquals(sender, _watcher))
         {
             return;
         }
 
-        lock (_reloadLock)
+        _configReloadPending = true;
+        _configReloadFailures = 0;
+        _configReloadAfter = DateTime.UtcNow.AddMilliseconds(ConfigReloadDelayMilliseconds);
+    }
+
+    private void ReloadPendingConfig()
+    {
+        if (!_configReloadPending || DateTime.UtcNow < _configReloadAfter)
         {
-            if (!File.Exists(ConfigFileFullPath))
+            return;
+        }
+
+        _configReloadPending = false;
+        try
+        {
+            string content = File.ReadAllText(ConfigFileFullPath);
+            if (string.Equals(content, _lastConfigContent, StringComparison.Ordinal))
             {
-                ClanLogger.LogWarning("Config file does not exist. Skipping reload.");
                 return;
             }
 
+            bool saveOnSet = Config.SaveOnConfigSet;
+            _lastConfigContent = null;
             try
             {
-                SaveWithRespectToConfigSet(reload: true);
-                ClanLogger.LogInfo("Configuration reload complete.");
-            }
-            catch (Exception ex)
-            {
-                ClanLogger.LogError($"Error reloading configuration: {ex.Message}");
-            }
-        }
-
-        _lastConfigReloadTime = now;
-    }
-
-    private void SaveWithRespectToConfigSet(bool reload = false)
-    {
-        bool originalSaveOnSet = Config.SaveOnConfigSet;
-        try
-        {
-            Config.SaveOnConfigSet = false;
-            if (reload)
-            {
+                // Reload still uses BepInEx/ServerSync deserialization and locking.
+                // Saving here (including per-entry auto-save) feeds our own watcher.
+                Config.SaveOnConfigSet = false;
                 Config.Reload();
             }
-            Config.Save();
+            finally
+            {
+                Config.SaveOnConfigSet = saveOnSet;
+            }
+
+            // Reload opens the file itself. If an editor wrote between the two
+            // reads, no snapshot is known to match the applied settings yet.
+            if (!string.Equals(content, File.ReadAllText(ConfigFileFullPath), StringComparison.Ordinal))
+            {
+                _configReloadPending = true;
+                _configReloadAfter = DateTime.UtcNow.AddMilliseconds(ConfigReloadDelayMilliseconds);
+                return;
+            }
+
+            _lastConfigContent = content;
+            _configReloadFailures = 0;
+            ClanLogger.LogInfo("Configuration reload complete.");
         }
-        finally
+        catch (IOException ex)
         {
-            Config.SaveOnConfigSet = originalSaveOnSet;
+            // Editors may briefly lock or replace the file; retry without needing
+            // another filesystem event, but do not retry/log forever on failure.
+            if (++_configReloadFailures <= ConfigReloadRetryLimit)
+            {
+                _configReloadPending = true;
+                _configReloadAfter = DateTime.UtcNow.AddMilliseconds(ConfigReloadDelayMilliseconds);
+                return;
+            }
+
+            ClanLogger.LogError($"Error reloading configuration: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            ClanLogger.LogError($"Error reloading configuration: {ex.Message}");
         }
     }
 

@@ -4,6 +4,7 @@ Development target: Valheim 1.0.12, original game assemblies, no Jotunn dependen
 
 ```powershell
 dotnet build Clan.csproj -c Debug -p:DeployToGame=true
+pwsh -NoProfile -File Tests/ClanConfigReloadSmoke.ps1
 pwsh -NoProfile -File Tests/ClanChatIntegrationSmoke.ps1
 pwsh -NoProfile -File Tests/ClanMediaStateSmoke.ps1
 pwsh -NoProfile -File Tests/ClanPanelInteractionSmoke.ps1
@@ -15,7 +16,9 @@ pwsh -NoProfile -File Tests/ClanGroupSharingSmoke.ps1
 pwsh -NoProfile -File Tests/ClanOptionalCompatContracts.ps1
 ```
 
-The first four scripts execute selected production method bodies with controlled game/Unity substitutes. The resource test covers delayed discovery, caching, headless execution, atlas copy ownership, scene changes, event cleanup, and balanced game asset references. It does not load real game assets or render the UI.
+The chat, media, panel and dock layout scripts execute selected production method bodies with controlled game/Unity substitutes. The resource test covers delayed discovery, caching, headless execution, atlas copy ownership, scene changes, event cleanup, and balanced game asset references. It does not load real game assets or render the UI.
+
+`ClanConfigReloadSmoke.ps1` compiles the production watcher fields and methods unchanged with a controlled config/save substitute. Its 30 checks use real temporary files and Windows filesystem events, including three-second dispatcher delays, duplicate writes, atomic replacement and exclusive file locks. It also checks rapid edits, writes during reload, an external revert following an in-game save, bounded retry, save-flag restoration and cleanup. It does not load BepInEx/ServerSync or run the game. In-game validation must additionally cover client-only settings and admin/non-admin edits of locked server settings, followed by disconnect/reconnect to verify local preferences are preserved.
 
 The compatibility script examines the actual final DLL against client and dedicated-server original assemblies. It checks game member access, declared Harmony targets, specific reflection contracts, and removal of Jotunn. Path parameters can be overridden. It requires Mono.Cecil 0.11.6 (or its explicit DLL path). It does not apply Harmony patches or execute Unity.
 
