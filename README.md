@@ -71,7 +71,7 @@ Accepted applications and invitations always start as `Guest`. Leaders and offic
 
 ## Optional combat and quest compatibility
 
-Install the same Clan build and the relevant optional mod on the server and participating clients, including clients that own nearby creatures. The reviewed versions are **WackyEpicMMOSystem 1.9.68** and **RtDQuestForge 0.2.13**. Other versions disable the corresponding adapter with a startup warning until their contracts are reviewed. Clan does not bundle either mod or require Jotunn; QuestForge retains its own dependencies.
+Install the same Clan build and the relevant optional mod on the server and participating clients, including clients that own nearby creatures. Adapters are enabled by checking the required APIs and patch structure, without restricting either mod to a specific version number. Epic MMO must retain the combat XP methods, group multiplier and a uniquely matching injection point; QuestForge must expose the Manager and RegisterKill method. If these checks fail, only the affected adapter is disabled with a startup warning. This does not guarantee compatibility with every future change in either mod's behavior. Clan does not bundle either mod or require Jotunn; QuestForge retains its own dependencies.
 
 Server-synchronized settings in `3 - Compatibility`:
 

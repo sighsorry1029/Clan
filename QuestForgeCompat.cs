@@ -25,19 +25,17 @@ internal static class QuestForgeCompat
         {
             target = AccessTools.Method(typeof(Character), nameof(Character.OnDeath), Type.EmptyTypes);
             if (target == null) throw new MissingMethodException("Character.OnDeath is unavailable.");
-            if (plugin.Metadata.Version != new System.Version(0, 2, 13))
-                throw new NotSupportedException($"Unreviewed version {plugin.Metadata.Version}.");
             Type pluginType = plugin.Instance.GetType().Assembly.GetType("RtDQuestForge.QuestForgePlugin", true)!;
             _managerField = pluginType.GetField("Manager", BindingFlags.Public | BindingFlags.Static);
             _registerMethod = _managerField?.FieldType.GetMethod("RegisterKill", BindingFlags.Public | BindingFlags.Instance,
                 null, new[] { typeof(string) }, null);
-            if (_registerMethod?.ReturnType != typeof(void) ||
+            if (_registerMethod?.ReturnType != typeof(void) || _registerMethod.ContainsGenericParameters ||
                 AccessTools.Field(typeof(Character), "m_lastHit")?.FieldType != typeof(HitData))
                 throw new MissingMethodException("Quest kill or last-attacker contract changed.");
             harmony.Patch(target,
                 prefix: new HarmonyMethod(prefix) { priority = Priority.Last },
                 postfix: new HarmonyMethod(postfix) { priority = Priority.Last, after = new[] { PluginGuid } });
-            ClanPlugin.ClanLogger.LogInfo("RtDQuestForge 0.2.13 clan kill-credit compatibility ready.");
+            ClanPlugin.ClanLogger.LogInfo($"RtDQuestForge {plugin.Metadata.Version} clan kill-credit compatibility ready.");
         }
         catch (Exception exception)
         {

@@ -24,8 +24,6 @@ internal static class EpicMmoCompat
         MethodInfo transpiler = typeof(EpicMmoCompat).GetMethod(nameof(Transpile), BindingFlags.NonPublic | BindingFlags.Static)!;
         try
         {
-            if (plugin.Metadata.Version != new System.Version(1, 9, 68))
-                throw new NotSupportedException($"Unreviewed version {plugin.Metadata.Version}.");
             Assembly assembly = plugin.Instance.GetType().Assembly;
             Type type = assembly.GetType("EpicMMOSystem.MonsterDeath_Path", true)!;
             target = type.GetMethod("RPC_DeadMonster", BindingFlags.Public | BindingFlags.Static,
@@ -34,7 +32,8 @@ internal static class EpicMmoCompat
                 null, new[] { typeof(long), typeof(int), typeof(Vector3), typeof(int) }, null);
             _groupMultiplier = assembly.GetType("EpicMMOSystem.EpicMMOSystem", true)!
                 .GetField("groupExp", BindingFlags.Public | BindingFlags.Static)?.GetValue(null) as ConfigEntry<float>;
-            if (target?.ReturnType != typeof(void) || receive?.ReturnType != typeof(void) || _groupMultiplier == null)
+            if (target?.ReturnType != typeof(void) || target.ContainsGenericParameters ||
+                receive?.ReturnType != typeof(void) || receive.ContainsGenericParameters || _groupMultiplier == null)
                 throw new MissingMethodException("Combat XP contract changed.");
             _receive = (Action<long, int, Vector3, int>)Delegate.CreateDelegate(
                 typeof(Action<long, int, Vector3, int>), receive);
@@ -42,7 +41,7 @@ internal static class EpicMmoCompat
                 throw new NotSupportedException("Combat XP instruction pattern changed.");
             harmony.Patch(target, transpiler: new HarmonyMethod(transpiler));
             if (!IsReady) throw new NotSupportedException("Another patch changed the combat XP instruction pattern.");
-            ClanPlugin.ClanLogger.LogInfo("WackyEpicMMOSystem 1.9.68 clan combat XP compatibility ready.");
+            ClanPlugin.ClanLogger.LogInfo($"WackyEpicMMOSystem {plugin.Metadata.Version} clan combat XP compatibility ready.");
         }
         catch (Exception exception)
         {
@@ -113,6 +112,9 @@ internal static class EpicMmoCompat
             .Where(i => Calls(code[i], "Groups.API", "IsLoaded")).ToArray();
         if (calls.Length != 1) return false;
         index = calls[0];
+        if (code[index].operand is not MethodInfo { IsStatic: true } anchor ||
+            anchor.ReturnType != typeof(bool) || anchor.ContainsGenericParameters ||
+            anchor.GetParameters().Length != 0) return false;
         if (index + 2 >= code.Count ||
             (code[index + 1].opcode != OpCodes.Brtrue && code[index + 1].opcode != OpCodes.Brtrue_S) ||
             code[index + 2].opcode != OpCodes.Ret || code[index + 1].labels.Count != 0 ||

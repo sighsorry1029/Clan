@@ -37,7 +37,7 @@ Implementation files in the Clan repository:
 - `EpicMmoCompat.cs`: separate combat XP adapter; it does not share quest rewards.
 - `Plugin.cs` / `ClanRpc.cs`: soft dependencies, synchronized configuration and lifecycle wiring.
 
-QuestForge is detected through its BepInEx GUID with a soft dependency. Version 0.2.13 and the following signatures are checked before enabling the adapter:
+QuestForge is detected through its BepInEx GUID with a soft dependency. Starting in Clan 1.1.2, the adapter checks the following signatures without an exact-version restriction. The binary-specific findings in this handoff remain based on the versions listed above:
 
 ```text
 RtDQuestForge.QuestForgePlugin.Manager
@@ -46,7 +46,7 @@ RtDQuestForge.QuestManager.RegisterKill(string prefabName)
     public instance method returning void
 ```
 
-The field and method lookup are cached. The current Manager field is read when applying credit; if the Manager instance changes, the cached delegate is replaced. The delegate is released at session teardown. Other versions disable only this adapter with a warning until reviewed.
+The field and method lookup are cached. The current Manager field is read when applying credit; if the Manager instance changes, the cached delegate is replaced. The delegate is released at session teardown. Missing or incompatible APIs disable only this adapter with a warning. Matching signatures cannot prove unchanged upstream behavior, so new versions still benefit from multiplayer validation.
 
 Clan adds a prefix/postfix to `Character.OnDeath()`. It does not suppress the game's original method or modify QuestForge's existing patch.
 

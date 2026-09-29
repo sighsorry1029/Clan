@@ -49,14 +49,23 @@ try {
     $quest = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Resolve-Path $QuestDll), $reader)
     $modMetadata = [Mono.Cecil.AssemblyDefinition]::ReadAssembly((Resolve-Path $ModAssembly), $reader)
     $cm = ($original.MainModule.Types | Where-Object FullName -eq 'EpicMMOSystem.MonsterDeath_Path').Methods | Where-Object Name -eq 'RPC_DeadMonster'
-    if ($original.Name.Version -ne [version]'1.9.68.0') { throw 'Unreviewed Epic assembly version.' }
-    if ($cm.Body.ExceptionHandlers.Count -ne 1 -or $cm.Body.ExceptionHandlers[0].HandlerType -ne 'Finally') { throw 'Unreviewed Epic EH shape.' }
+    $epicPlugin = $original.MainModule.Types | Where-Object FullName -eq 'EpicMMOSystem.EpicMMOSystem'
+    $epicMetadata = $epicPlugin.CustomAttributes | Where-Object { $_.AttributeType.FullName -eq 'BepInEx.BepInPlugin' }
+    if ($epicMetadata.ConstructorArguments[0].Value -ne 'WackyMole.EpicMMOSystem') { throw 'Unexpected Epic plugin identity.' }
+    $combatType = $original.MainModule.Types | Where-Object FullName -eq 'EpicMMOSystem.MonsterDeath_Path'
+    $receiver = @($combatType.Methods | Where-Object { $_.Name -eq 'RPC_AddGroupExp' -and $_.IsPublic -and $_.IsStatic -and !$_.HasGenericParameters -and $_.ReturnType.FullName -eq 'System.Void' -and ($_.Parameters.ParameterType.FullName -join '|') -eq 'System.Int64|System.Int32|UnityEngine.Vector3|System.Int32' })
+    if (!$cm.IsPublic -or !$cm.IsStatic -or $cm.HasGenericParameters -or $cm.ReturnType.FullName -ne 'System.Void' -or
+        ($cm.Parameters.ParameterType.FullName -join '|') -ne 'System.Int64|ZPackage' -or $receiver.Count -ne 1 -or
+        !($epicPlugin.Fields | Where-Object { $_.Name -eq 'groupExp' -and $_.IsPublic -and $_.IsStatic -and $_.FieldType.FullName -eq 'BepInEx.Configuration.ConfigEntry`1<System.Single>' })) { throw 'Epic combat API contract changed.' }
+    if ($cm.Body.ExceptionHandlers.Count -ne 1 -or $cm.Body.ExceptionHandlers[0].HandlerType -ne 'Finally') { throw 'Epic EH shape is not supported by this standalone test converter.' }
     $plugin = $quest.MainModule.Types | Where-Object FullName -eq 'RtDQuestForge.QuestForgePlugin'
     $metadata = $plugin.CustomAttributes | Where-Object { $_.AttributeType.FullName -eq 'BepInEx.BepInPlugin' }
-    if ($metadata.ConstructorArguments[0].Value -ne 'soloredis.rtdquestforge' -or $metadata.ConstructorArguments[2].Value -ne '0.2.13') { throw 'Unreviewed QuestForge plugin.' }
-    $manager = $quest.MainModule.Types | Where-Object FullName -eq 'RtDQuestForge.QuestManager'
-    $register = @($manager.Methods | Where-Object { $_.Name -eq 'RegisterKill' -and $_.IsPublic -and !$_.IsStatic -and $_.ReturnType.FullName -eq 'System.Void' -and ($_.Parameters.ParameterType.FullName -join '|') -eq 'System.String' })
-    if ($register.Count -ne 1 -or !($plugin.Fields | Where-Object { $_.Name -eq 'Manager' -and $_.IsPublic -and $_.IsStatic -and $_.FieldType.FullName -eq $manager.FullName })) { throw 'QuestForge manager contract changed.' }
+    if ($metadata.ConstructorArguments[0].Value -ne 'soloredis.rtdquestforge') { throw 'Unexpected QuestForge plugin identity.' }
+    $managerField = @($plugin.Fields | Where-Object { $_.Name -eq 'Manager' -and $_.IsPublic -and $_.IsStatic })
+    if ($managerField.Count -ne 1) { throw 'QuestForge Manager field changed.' }
+    $manager = $managerField[0].FieldType.Resolve()
+    $register = @($manager.Methods | Where-Object { $_.Name -eq 'RegisterKill' -and $_.IsPublic -and !$_.IsStatic -and !$_.HasGenericParameters -and $_.ReturnType.FullName -eq 'System.Void' -and ($_.Parameters.ParameterType.FullName -join '|') -eq 'System.String' })
+    if ($register.Count -ne 1) { throw 'QuestForge RegisterKill contract changed.' }
     if (@($modMetadata.MainModule.AssemblyReferences | Where-Object { $_.Name -in @('EpicMMOSystem','RtDQuestForge','Jotunn') }).Count) { throw 'Optional bridge gained a hard assembly reference.' }
     $clanPlugin = $modMetadata.MainModule.Types | Where-Object FullName -eq 'Clan.ClanPlugin'
     foreach ($guid in @('WackyMole.EpicMMOSystem','soloredis.rtdquestforge')) {
@@ -120,7 +129,26 @@ try {
     $duplicate.Add($originalObjects[$insertion])
     $negative = [object[]]@($duplicate, $target, -1, $null)
     if ($matcher.Invoke($null, $negative)) { throw 'Ambiguous anchor was accepted.' }
+    # Same full type/method name, but changed stack contracts must not be patched.
+    foreach ($variant in @('argument', 'return', 'instance')) {
+        $fixture = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly([Reflection.AssemblyName]::new("ClanAnchorProbe_$variant"), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+        $typeBuilder = $fixture.DefineDynamicModule('Main').DefineType('Groups.API', [Reflection.TypeAttributes]::Public)
+        $attributes = [Reflection.MethodAttributes]::Public
+        if ($variant -ne 'instance') { $attributes = $attributes -bor [Reflection.MethodAttributes]::Static }
+        $returnType = if ($variant -eq 'return') { [int] } else { [bool] }
+        $parameters = if ($variant -eq 'argument') { [Type[]]@([int]) } else { [Type[]]@() }
+        $methodBuilder = $typeBuilder.DefineMethod('IsLoaded', $attributes, $returnType, [Type[]]$parameters)
+        $il = $methodBuilder.GetILGenerator(); $il.Emit([Reflection.Emit.OpCodes]::Ldc_I4_0); $il.Emit([Reflection.Emit.OpCodes]::Ret)
+        $badAnchor = $typeBuilder.CreateType().GetMethod('IsLoaded')
+        $changed = [Collections.Generic.List[HarmonyLib.CodeInstruction]]::new()
+        foreach ($instruction in $originalObjects) { $changed.Add($instruction) }
+        $changed[$insertion] = [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Call, $badAnchor)
+        $negative = [object[]]@($changed, $target, -1, $null)
+        if ($matcher.Invoke($null, $negative)) { throw "Incompatible $variant anchor was accepted." }
+    }
+    Write-Output "Inspected: Epic plugin $($epicMetadata.ConstructorArguments[2].Value) / assembly $($original.Name.Version); QuestForge plugin $($metadata.ConstructorArguments[2].Value) / assembly $($quest.Name.Version)."
     Write-Output "PASS: original Epic IL $originalCount -> $($rewritten.Count) instructions; $labelCount branch labels and $blockCount EH markers preserved; ambiguous pattern rejected."
+    Write-Output 'PASS: same-name anchors with incompatible parameters, return type or instance scope rejected.'
     Write-Output 'PASS: original QuestForge manager contract, optional loader dependencies and absence of direct external assembly references. No game/XP/reward execution.'
 }
 finally {
