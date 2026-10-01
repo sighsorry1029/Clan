@@ -43,7 +43,7 @@ Assert-True (-not $source.Contains('_pendingClanPanelShortcut')) 'Deferred short
 
 $init = Get-SourceBlock $source 'public static void Init()'
 $dispose = Get-SourceBlock $source 'public static void Dispose()'
-$rebuild = Get-SourceBlock $source 'private static void Rebuild(bool preservePanelInteractionState)'
+$rebuild = Get-SourceBlock $source 'private static void Rebuild()'
 $pluginUpdate = Get-SourceBlock $pluginSource 'private void Update()'
 $factoryTick = Get-SourceBlock $factorySource 'internal static void Tick()'
 $prepareResources = Get-SourceBlock $factorySource 'internal static bool PrepareResources()'

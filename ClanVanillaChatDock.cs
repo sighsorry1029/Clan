@@ -382,11 +382,6 @@ internal static class ClanVanillaChatDock
         }
     }
 
-    private static void Rebuild()
-    {
-        Rebuild(preservePanelInteractionState: _reopenPanelAfterRebuild);
-    }
-
     private static void OnUiResourcesAvailable()
     {
         try
@@ -400,7 +395,7 @@ internal static class ClanVanillaChatDock
         }
     }
 
-    private static void Rebuild(bool preservePanelInteractionState)
+    private static void Rebuild()
     {
         if (ClanUiFactory.IsHeadless || Chat.instance == null || !ClanUiFactory.ResourcesReady)
         {
@@ -422,8 +417,7 @@ internal static class ClanVanillaChatDock
             return;
         }
 
-        bool preserveInteractionState =
-            preservePanelInteractionState || _reopenPanelAfterRebuild;
+        bool preserveInteractionState = _reopenPanelAfterRebuild;
         try
         {
             DestroyRoot(preserveInteractionState);
@@ -487,7 +481,7 @@ internal static class ClanVanillaChatDock
 
         ClanPanelController.RebuildStandaloneView(
             preserveInteractionState: _reopenPanelAfterRebuild);
-        Rebuild(preservePanelInteractionState: _reopenPanelAfterRebuild);
+        Rebuild();
     }
 
     private static void RestorePanelAfterRebuild()
