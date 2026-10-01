@@ -83,6 +83,8 @@ Server-synchronized settings in `3 - Compatibility`:
 
 Guest membership takes precedence over primary membership for both features. No credit is sent to both clans, and the original killer is excluded from additional credit. These features do not add a separate temporary-party system or change Clan's existing incompatibility with Groups.
 
+Epic combat sharing uses the base XP before the killer's personal level curve and the final effective monster level, including monster-specific XP/level overrides when provided. Each recipient still uses Epic's own group XP receiver for range, level curves and XP modifiers.
+
 The relay checks connected identities and server-side clan membership. Quest reports also check the creature owner, prefab and death ID; very late reports or unrecognized ownership are rejected. Epic's native combat report has no unique death ID, so the relay rejects duplicate transport sequences but cannot identify independently repeated native kill reports. These checks do not make third-party combat or reward systems fully server-authoritative.
 
 ## Custom emoji and emblems

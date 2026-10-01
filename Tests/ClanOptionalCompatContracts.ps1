@@ -4,6 +4,8 @@ param(
     [string]$EpicDll = "$env:APPDATA\com.kesomannen.gale\valheim\profiles\wackyepicmmoy\BepInEx\plugins\WackyMole-WackyEpicMMOSystem\EpicMMOSystem.dll",
     [string]$QuestDll = "$env:APPDATA\com.kesomannen.gale\valheim\profiles\wackyepicmmoy\BepInEx\plugins\Soloredis-RtDQuestForge\RtDQuestForge.dll",
     [string]$ModAssembly = (Join-Path (Split-Path $PSScriptRoot) 'bin\Debug\Clan.dll'),
+    # Optional independent oracle from the reviewed original IL: raw XP, position, level, boss.
+    [string]$ExpectedLocalSlots = '',
     [string]$GamePath = 'C:\Program Files (x86)\Steam\steamapps\common\Valheim',
     [string]$CecilAssembly = "$env:USERPROFILE\.nuget\packages\mono.cecil\0.11.6\lib\netstandard2.0\Mono.Cecil.dll"
 )
@@ -111,8 +113,23 @@ try {
     $argsForMatch = [object[]]@($code, $target, -1, $null)
     if (!$matcher.Invoke($null, $argsForMatch)) { throw 'Production matcher rejected the reviewed original Epic DLL.' }
     $insertion = [int]$argsForMatch[2]
+    $selectedLocals = [int[]]$argsForMatch[3]
+    if ($ExpectedLocalSlots -and ($selectedLocals -join ',') -ne $ExpectedLocalSlots) {
+        throw "Wrong semantic locals: $($selectedLocals -join ','); expected $ExpectedLocalSlots."
+    }
     $originalCount = $code.Count
     $originalObjects = @($code)
+    function Instruction-State($instruction) {
+        $operand = if ($instruction.operand -is [Reflection.Emit.Label]) {
+            'label:' + $instruction.operand.GetHashCode()
+        } elseif ($instruction.operand -is [Reflection.MemberInfo]) {
+            "$($instruction.operand.Module.ModuleVersionId):$($instruction.operand.MetadataToken):$($instruction.operand.DeclaringType.AssemblyQualifiedName):$($instruction.operand)"
+        } else { [string]$instruction.operand }
+        $labelState = ($instruction.labels | ForEach-Object { $_.GetHashCode() }) -join ','
+        $blockState = ($instruction.blocks | ForEach-Object { "$($_.blockType):$($_.catchType)" }) -join ','
+        "$($instruction.opcode)|$operand|$labelState|$blockState"
+    }
+    $originalStates = @($code | ForEach-Object { Instruction-State $_ })
     $labelCount = ($code | ForEach-Object { $_.labels.Count } | Measure-Object -Sum).Sum
     $blockCount = ($code | ForEach-Object { $_.blocks.Count } | Measure-Object -Sum).Sum
     $rewritten = @($compat.GetMethod('Transpile', $flags).Invoke($null, @($code, $target)))
@@ -120,10 +137,70 @@ try {
     for ($i = 0; $i -lt $originalObjects.Count; $i++) {
         $newIndex = $i; if ($i -gt $insertion) { $newIndex += 5 }
         if (![object]::ReferenceEquals($originalObjects[$i], $rewritten[$newIndex])) { throw 'Original instruction replaced/reordered.' }
+        if ((Instruction-State $rewritten[$newIndex]) -cne $originalStates[$i]) { throw 'Original instruction or label/EH placement mutated.' }
     }
     if (($rewritten | ForEach-Object { $_.labels.Count } | Measure-Object -Sum).Sum -ne $labelCount -or
         ($rewritten | ForEach-Object { $_.blocks.Count } | Measure-Object -Sum).Sum -ne $blockCount) { throw 'Branch or EH marker changed.' }
     if ($rewritten[$insertion + 5].operand.Name -ne 'ShareOrKeepNative') { throw 'Wrong injected callback.' }
+    $readLocal = $compat.GetMethod('Local', $flags)
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($readLocal.Invoke($null, @($rewritten[$insertion + 1 + $i], $false)) -ne $selectedLocals[$i]) {
+            throw 'Injected XP/position/level/boss argument order changed.'
+        }
+    }
+    foreach ($instruction in $rewritten[($insertion + 1)..($insertion + 5)]) {
+        if ($instruction.labels.Count -or $instruction.blocks.Count) { throw 'Inserted instruction captured a branch/EH boundary.' }
+    }
+
+    # Mutate the original code, never the production assembly or the game DLLs.
+    # These fixtures exercise wrong values of the same type and broken control flow.
+    function Copy-OriginalCode {
+        $copy = [Collections.Generic.List[HarmonyLib.CodeInstruction]]::new()
+        foreach ($instruction in $originalObjects) { $copy.Add([HarmonyLib.CodeInstruction]::new($instruction)) }
+        return ,$copy
+    }
+    function Assert-Rejected($fixtureCode, [string]$reason) {
+        $probe = [object[]]@($fixtureCode, $target, -1, $null)
+        if ($matcher.Invoke($null, $probe)) { throw "Unsafe pattern accepted: $reason" }
+    }
+    $groupField = @((0..($originalCount - 1)) | Where-Object {
+        $originalObjects[$_].opcode -eq [Reflection.Emit.OpCodes]::Ldsfld -and
+        $originalObjects[$_].operand.Name -eq 'groupExp'
+    })
+    if ($groupField.Count -ne 1) { throw 'Expected one native group multiplier load in the fixture.' }
+    $bossStart = $groupField[0] - 8
+    $changed = Copy-OriginalCode
+    $changed[$bossStart + 2] = [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Ldloc, $locals[$selectedLocals[0]])
+    Assert-Rejected $changed 'raw XP used as the native level'
+    $changed = Copy-OriginalCode
+    $changed[$bossStart] = [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Ldloc, $locals[$selectedLocals[2]])
+    Assert-Rejected $changed 'integer level used as the boss flag'
+    $changed = Copy-OriginalCode
+    $changed[$bossStart + 1].operand = $g.DefineLabel()
+    Assert-Rejected $changed 'boss branch misses the multiplier join'
+    $changed = Copy-OriginalCode
+    $changed.Insert($insertion + 3, [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Stloc, $locals[$selectedLocals[3]]))
+    $changed.Insert($insertion + 3, [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Ldc_I4_0))
+    Assert-Rejected $changed 'boss flag overwritten after the injected callback'
+
+    $effectiveCall = @((0..($insertion - 1)) | Where-Object {
+        $originalObjects[$_].operand -is [Reflection.MethodInfo] -and
+        $originalObjects[$_].operand.Name -eq 'GetEffectiveLevel'
+    })
+    if ($effectiveCall.Count) {
+        if ($effectiveCall.Count -ne 1) { throw 'Expected one effective-level producer in the fixture.' }
+        $producer = $effectiveCall[0]
+        $changed = Copy-OriginalCode
+        $changed[$producer + 1] = [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Stloc, $locals[$selectedLocals[0]])
+        Assert-Rejected $changed 'effective level stored to the wrong integer local'
+        $changed = Copy-OriginalCode
+        $changed.Insert($insertion, [HarmonyLib.CodeInstruction]::new($originalObjects[$producer + 1]))
+        $changed.Insert($insertion, [HarmonyLib.CodeInstruction]::new($originalObjects[$producer]))
+        Assert-Rejected $changed 'ambiguous effective-level producers'
+        $changed = Copy-OriginalCode
+        $changed[$producer].operand = [Math].GetMethod('Max', [Type[]]@([int], [int]))
+        Assert-Rejected $changed 'unrecognized level calculation'
+    }
     $duplicate = [Collections.Generic.List[HarmonyLib.CodeInstruction]]::new()
     foreach ($instruction in $originalObjects) { $duplicate.Add($instruction) }
     $duplicate.Add($originalObjects[$insertion])
@@ -132,7 +209,8 @@ try {
     # Same full type/method name, but changed stack contracts must not be patched.
     foreach ($variant in @('argument', 'return', 'instance')) {
         $fixture = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly([Reflection.AssemblyName]::new("ClanAnchorProbe_$variant"), [Reflection.Emit.AssemblyBuilderAccess]::Run)
-        $typeBuilder = $fixture.DefineDynamicModule('Main').DefineType('Groups.API', [Reflection.TypeAttributes]::Public)
+        $fixtureModule = $fixture.DefineDynamicModule('Main')
+        $typeBuilder = $fixtureModule.DefineType('Groups.API', [Reflection.TypeAttributes]::Public)
         $attributes = [Reflection.MethodAttributes]::Public
         if ($variant -ne 'instance') { $attributes = $attributes -bor [Reflection.MethodAttributes]::Static }
         $returnType = if ($variant -eq 'return') { [int] } else { [bool] }
@@ -145,10 +223,25 @@ try {
         $changed[$insertion] = [HarmonyLib.CodeInstruction]::new([Reflection.Emit.OpCodes]::Call, $badAnchor)
         $negative = [object[]]@($changed, $target, -1, $null)
         if ($matcher.Invoke($null, $negative)) { throw "Incompatible $variant anchor was accepted." }
+
+        if ($effectiveCall.Count) {
+            $levelType = $fixtureModule.DefineType('EpicMMOSystem.DataMonsters', [Reflection.TypeAttributes]::Public)
+            $levelReturn = if ($variant -eq 'return') { [float] } else { [int] }
+            $levelParameters = if ($variant -eq 'argument') { [Type[]]@([int], [int]) } else { [Type[]]@([int], [int], [int]) }
+            $levelMethod = $levelType.DefineMethod('GetEffectiveLevel', $attributes, $levelReturn, $levelParameters)
+            $levelIL = $levelMethod.GetILGenerator()
+            $levelIL.Emit([Reflection.Emit.OpCodes]::Ldc_I4_0)
+            if ($variant -eq 'return') { $levelIL.Emit([Reflection.Emit.OpCodes]::Conv_R4) }
+            $levelIL.Emit([Reflection.Emit.OpCodes]::Ret)
+            $changed = Copy-OriginalCode
+            $changed[$effectiveCall[0]].operand = $levelType.CreateType().GetMethod('GetEffectiveLevel')
+            Assert-Rejected $changed "incompatible $variant effective-level signature"
+        }
     }
     Write-Output "Inspected: Epic plugin $($epicMetadata.ConstructorArguments[2].Value) / assembly $($original.Name.Version); QuestForge plugin $($metadata.ConstructorArguments[2].Value) / assembly $($quest.Name.Version)."
     Write-Output "PASS: original Epic IL $originalCount -> $($rewritten.Count) instructions; $labelCount branch labels and $blockCount EH markers preserved; ambiguous pattern rejected."
-    Write-Output 'PASS: same-name anchors with incompatible parameters, return type or instance scope rejected.'
+    Write-Output "PASS: selected raw-XP/position/level/boss locals [$($selectedLocals -join ',')], injected argument order and per-instruction state; incorrect level/boss/branch/producer fixtures rejected."
+    Write-Output 'PASS: same-name anchors and present effective-level calls with incompatible parameters, return type or instance scope rejected.'
     Write-Output 'PASS: original QuestForge manager contract, optional loader dependencies and absence of direct external assembly references. No game/XP/reward execution.'
 }
 finally {

@@ -101,7 +101,7 @@ internal static class EpicMmoCompat
         return code;
     }
 
-    // Infer locals from their producers; numbered locals are not an external API.
+    // Match value producers and Epic's own group-level encoding, not numbered locals.
     internal static bool TryFindInjection(IList<CodeInstruction> code, MethodBase method, out int index, out int[] locals)
     {
         index = -1;
@@ -120,10 +120,10 @@ internal static class EpicMmoCompat
             code[index + 2].opcode != OpCodes.Ret || code[index + 1].labels.Count != 0 ||
             code[index + 1].blocks.Count != 0) return false;
 
-        List<int> raw = new(), levels = new(), positions = new(), bosses = new();
-        for (int i = 0; i < index - 4; i++)
+        List<int> raw = new(), levels = new(), positions = new();
+        for (int i = 0; i < index; i++)
         {
-            if (Calls(code[i], "System.Convert", "ToInt32") &&
+            if (i + 3 < index && Calls(code[i], "System.Convert", "ToInt32") &&
                 code[i].operand is MethodInfo convert && convert.GetParameters().Length == 1 &&
                 convert.GetParameters()[0].ParameterType == typeof(float))
             {
@@ -131,16 +131,55 @@ internal static class EpicMmoCompat
                 if (slot >= 0 && Local(code[i + 2], false) == slot &&
                     Local(code[i + 3], true) >= 0 && Local(code[i + 3], true) != slot) raw.Add(slot);
             }
-            if (Calls(code[i], "EpicMMOSystem.DataMonsters", "getLevel") && Local(code[i + 1], true) >= 0)
+            if (i + 1 < index && Calls(code[i], "EpicMMOSystem.DataMonsters", "getLevel") && Local(code[i + 1], true) >= 0)
                 levels.Add(Local(code[i + 1], true));
-            if (Calls(code[i], "ZPackage", "ReadBool") && code[i + 1].opcode == OpCodes.Ldarg_1 &&
+            // Newer Epic versions apply star/configuration/level overrides here.
+            // Capture its result, never the configured level passed into the call.
+            if (i + 1 < index && Calls(code[i], "EpicMMOSystem.DataMonsters", "GetEffectiveLevel") &&
+                code[i].operand is MethodInfo { IsStatic: true } effectiveLevel &&
+                effectiveLevel.ReturnType == typeof(int) && !effectiveLevel.ContainsGenericParameters &&
+                effectiveLevel.GetParameters().Select(parameter => parameter.ParameterType)
+                    .SequenceEqual(new[] { typeof(int), typeof(int), typeof(int) }) &&
+                Local(code[i + 1], true) >= 0)
+                levels.Add(Local(code[i + 1], true));
+            if (i + 3 < index && Calls(code[i], "ZPackage", "ReadBool") && code[i + 1].opcode == OpCodes.Ldarg_1 &&
                 Calls(code[i + 2], "ZPackage", "ReadVector3"))
             {
                 positions.Add(Local(code[i + 3], true));
-                bosses.Add(Local(code[i + 4], true));
             }
         }
-        if (raw.Count != 1 || levels.Count != 1 || positions.Count != 1 || bosses.Count != 1) return false;
+        if (raw.Count != 1 || levels.Count != 1 || positions.Count != 1) return false;
+
+        // ReadBool may remain on the evaluation stack while Epic reads optional
+        // reward data. Identify the boss flag where native group XP actually uses
+        // it: if (boss && level != 0) level = -1 * level; then read groupExp.
+        List<int> bosses = new();
+        for (int i = index + 3; i + 8 < code.Count; i++)
+        {
+            if (Local(code[i], false) < 0 ||
+                !BranchesFalseTo(code[i + 1], code[i + 8]) ||
+                Local(code[i + 2], false) != levels[0] ||
+                !BranchesFalseTo(code[i + 3], code[i + 8]) ||
+                code[i + 4].opcode != OpCodes.Ldc_I4_M1 ||
+                Local(code[i + 5], false) != levels[0] || code[i + 6].opcode != OpCodes.Mul ||
+                Local(code[i + 7], true) != levels[0] || code[i + 8].opcode != OpCodes.Ldsfld ||
+                code[i + 8].operand is not FieldInfo multiplier ||
+                multiplier.DeclaringType?.FullName != "EpicMMOSystem.EpicMMOSystem" ||
+                multiplier.Name != "groupExp" || multiplier.FieldType != typeof(ConfigEntry<float>)) continue;
+            int boss = Local(code[i], false);
+            int bossStores = 0;
+            for (int j = 0; j < i; j++)
+            {
+                if (Local(code[j], true) != boss) continue;
+                // The injected callback must observe the same flag as the later
+                // native consumer, not one computed after our insertion point.
+                if (j >= index) return false;
+                bossStores++;
+            }
+            if (bossStores != 1) return false;
+            bosses.Add(boss);
+        }
+        if (bosses.Count != 1) return false;
         locals = new[] { raw[0], positions[0], levels[0], bosses[0] };
         Type[] types = { typeof(int), typeof(Vector3), typeof(int), typeof(bool) };
         if (locals.Distinct().Count() != 4) return false;
@@ -148,6 +187,10 @@ internal static class EpicMmoCompat
             if (locals[i] < 0 || locals[i] >= slots.Count || slots[locals[i]].LocalType != types[i]) return false;
         return true;
     }
+
+    private static bool BranchesFalseTo(CodeInstruction branch, CodeInstruction target) =>
+        (branch.opcode == OpCodes.Brfalse || branch.opcode == OpCodes.Brfalse_S) &&
+        branch.operand is Label label && target.labels.Contains(label);
 
     private static bool Calls(CodeInstruction code, string type, string name) =>
         (code.opcode == OpCodes.Call || code.opcode == OpCodes.Callvirt) &&
