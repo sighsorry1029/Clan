@@ -491,19 +491,18 @@ internal static partial class ClanEmoji
         return count;
     }
 
-    private static string RewriteAnimatedSpriteTags(
-        string text,
-        ref int animatedOrdinal,
-        int animatedOccurrencesToFreeze)
+    private static string ApplyAnimatedSpriteBudget(string text, int budget)
     {
+        int totalAnimatedOccurrences = CountAnimatedSpriteOccurrences(text);
+        int animatedOccurrencesToFreeze = Math.Max(0, totalAnimatedOccurrences - budget);
         RuntimeLibrary? runtime = _runtime;
         if (runtime == null || string.IsNullOrEmpty(text))
         {
             return text;
         }
 
-        int ordinal = animatedOrdinal;
-        string rewritten = runtime.SpriteTagRegex.Replace(text, match =>
+        int ordinal = 0;
+        return runtime.SpriteTagRegex.Replace(text, match =>
         {
             if (!runtime.RenderTagsBySpriteName.TryGetValue(
                     match.Groups["name"].Value,
@@ -521,19 +520,6 @@ internal static partial class ClanEmoji
                 ? renderTag.StaticTag
                 : renderTag.AnimatedTag;
         });
-        animatedOrdinal = ordinal;
-        return rewritten;
-    }
-
-    private static string ApplyAnimatedSpriteBudget(string text, int budget)
-    {
-        int totalAnimatedOccurrences = CountAnimatedSpriteOccurrences(text);
-        int animatedOccurrencesToFreeze = Math.Max(0, totalAnimatedOccurrences - budget);
-        int animatedOrdinal = 0;
-        return RewriteAnimatedSpriteTags(
-            text,
-            ref animatedOrdinal,
-            animatedOccurrencesToFreeze);
     }
 
     private static void LoadServerManifest(bool preserveLastGood)

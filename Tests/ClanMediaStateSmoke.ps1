@@ -1,7 +1,7 @@
 #requires -Version 7.0
 <#
 Production-linked media state smoke tests. The manifest parser, Tick, catalog
-handoff, build orchestration, cancellation, runtime replacement, and cache writer
+handoff, build orchestration, cancellation, runtime replacement, animation budget, and cache writer
 are compiled unchanged from the current sources. Unity objects/rendering, server
 watchers, and transport/file discovery are controlled substitutes. These tests do
 not validate Harmony installation, PNG/GIF decoding, network transfer, or graphics.
@@ -39,6 +39,8 @@ $emojiDeclarations = @(
     'private static void ReplaceRuntime(', 'private static string SerializeManifest(',
     'private static List<ManifestRecord> ParseManifest(', 'private static int GetMaximumSourceBytes(',
     'private static string ComputeSha256(', 'private static bool IsSha256(',
+    'private static int CountAnimatedSpriteOccurrences(',
+    'private static string ApplyAnimatedSpriteBudget(', 'private sealed class RuntimeRenderTag',
     'private static bool IsSafeName(', 'private static HashSet<string> BuildReservedWindowsNames()',
     'private enum MediaRole', 'private enum EmojiFileKind', 'private sealed class ManifestRecord',
     'private sealed class PendingManifestState', 'private sealed class BuildState',
@@ -62,6 +64,8 @@ if ($stateStart -lt 0 -or $stateEnd -le $stateStart) { throw 'Media state declar
 $state = $emojiSource.Substring($stateStart, $stateEnd - $stateStart)
 $safeNameRegex = [regex]::Match($emojiSource, 'private static readonly Regex SafeNameRegex = new\([\s\S]*?;').Value
 if (!$safeNameRegex) { throw 'Production filename validation expression was not found.' }
+$spriteTagRegex = [regex]::Match($emojiSource, '(?s)        Regex spriteTagRegex =.*?;').Value
+if (!$spriteTagRegex) { throw 'Production sprite-tag expression was not found.' }
 $testNamespace = 'ClanMediaSmoke_' + [Guid]::NewGuid().ToString('N')
 
 $harnessSource = @"
@@ -112,7 +116,13 @@ namespace $testNamespace
         private static int _checks, _notifications, _destroyedRuntimes, _prunes;
         private static IReadOnlyList<ManifestRecord>? _lastPrunedRecords;
         private sealed class Budget { public void Reset() { } }
-        private sealed class RuntimeLibrary { public bool Destroyed; }
+        private sealed class RuntimeLibrary
+        {
+            public bool Destroyed;
+            public IReadOnlyDictionary<string, RuntimeRenderTag> RenderTagsBySpriteName =
+                new Dictionary<string, RuntimeRenderTag>();
+            public Regex SpriteTagRegex = new("(?!)");
+        }
         private sealed class RuntimeBuildState
         {
             public bool Destroyed, Released;
@@ -211,6 +221,47 @@ namespace $testNamespace
         {
             for (int step = 0; step < 10 && _build != null; step++) ProcessBuildStep();
             Check(_build == null, "A build must finish or fail within the controlled steps");
+        }
+        private static void CheckAnimationBudget()
+        {
+            const string frozen = "<sprite name=\"gif\">";
+            const string animated = "<sprite name=\"gif\" anim=\"0,3,10\">";
+            const string still = "<sprite name=\"png\">";
+            const string unknown = "<sprite name=\"other\" anim=\"0,1,5\">";
+            _runtime = null;
+            Check(ApplyAnimatedSpriteBudget(animated, 0) == animated,
+                "Without a runtime, existing sprite tags remain unchanged");
+            Check(ApplyAnimatedSpriteBudget(null!, 0) == null,
+                "A missing text value remains unchanged");
+            Dictionary<string, RuntimeRenderTag> renderTagsBySpriteName = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["gif"] = new(animated, frozen, true),
+                ["png"] = new(still, still, false)
+            };
+            $spriteTagRegex
+            _runtime = new RuntimeLibrary
+            {
+                RenderTagsBySpriteName = renderTagsBySpriteName,
+                SpriteTagRegex = spriteTagRegex
+            };
+            Check(ApplyAnimatedSpriteBudget("", 15) == "", "Empty text remains empty");
+            Check(ApplyAnimatedSpriteBudget("한글 " + unknown, 0) == "한글 " + unknown,
+                "Ordinary text and unknown sprite names are not rewritten");
+            Check(ApplyAnimatedSpriteBudget("<sprite name=\"PNG\" anim=\"0,9,10\">", 0) == still,
+                "A static emoji is normalized without consuming animation budget");
+            Check(ApplyAnimatedSpriteBudget(frozen, 1) == animated,
+                "Previously frozen GIFs can animate when budget becomes available");
+            Check(ApplyAnimatedSpriteBudget("<SPRITE name=\"GIF\"/>", 1) == animated,
+                "Case-insensitive self-closing GIF tags keep their rendering behavior");
+            Check(ApplyAnimatedSpriteBudget(animated + still + frozen, 1) == frozen + still + animated,
+                "The newest GIF keeps the budget even if its incoming tag was frozen");
+            string seventeen = string.Concat(Enumerable.Repeat(animated, 17));
+            Check(ApplyAnimatedSpriteBudget(seventeen, 15) == frozen + frozen +
+                string.Concat(Enumerable.Repeat(animated, 15)), "Only the newest fifteen GIFs animate");
+            Check(ApplyAnimatedSpriteBudget(seventeen, 0) == string.Concat(Enumerable.Repeat(frozen, 17)),
+                "An inactive output with zero budget freezes every GIF");
+            Check(ApplyAnimatedSpriteBudget(seventeen, 100) == seventeen,
+                "An ample budget leaves every GIF animated");
         }
         public static string Run(string cacheDirectory)
         {
@@ -336,7 +387,8 @@ namespace $testNamespace
             WriteEmojiCacheAtomically(good, bytes);
             Check(File.ReadAllBytes(EmojiCachePath(good)).SequenceEqual(bytes)
                 && Directory.GetFiles(cacheDirectory, "*.part").Length == 0, "Valid bytes are flushed and published without an orphan temporary file");
-            return "PASS: " + _checks + " production-linked media state/cache checks; Unity, transport, watchers, and decoder execution remain untested.";
+            CheckAnimationBudget();
+            return "PASS: " + _checks + " production-linked media state/cache/animation checks; Unity, transport, watchers, and decoder execution remain untested.";
         }
     }
 }
