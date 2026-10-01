@@ -1937,69 +1937,6 @@ internal static partial class ClanRegistry
             ClanLocalization.EncodeStatus("clan_status_profile_updated"));
     }
 
-    private static ClanState CommitClanProfile(
-        ClanState clan,
-        string clanName,
-        string description,
-        string emblemKey)
-    {
-        if (!ClansById.TryGetValue(clan.ClanId, out ClanState indexedClan) ||
-            !ReferenceEquals(indexedClan, clan) ||
-            !ClansByName.TryGetValue(clan.Name, out ClanState namedClan) ||
-            !ReferenceEquals(namedClan, clan))
-        {
-            throw new InvalidOperationException(
-                $"Clan '{clan.ClanId}' is inconsistent with the registry indexes.");
-        }
-
-        string saveFile = ResolveSaveFile();
-        if (!string.Equals(_loadedSaveFile, saveFile, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "The clan registry storage changed while clan state was being updated.");
-        }
-
-        ValidateClanIndexes();
-        YamlRegistryDocument document = CreateSaveDocument();
-        YamlClanDto? target = document.Clans?
-            .SingleOrDefault(candidate =>
-                candidate != null &&
-                StringComparer.Ordinal.Equals(candidate.ClanId, clan.ClanId));
-        if (target == null)
-        {
-            throw new InvalidOperationException(
-                $"Clan '{clan.ClanId}' is missing from the save candidate.");
-        }
-
-        target.Name = ClanDataRules.RequireClanName(clanName);
-        target.Description = ClanDataRules.RequireClanDescription(description);
-        target.EmblemKey = ClanDataRules.RequireClanEmblemKey(emblemKey);
-
-        byte[] bytes = SerializeSave(document);
-        if (bytes.Length > MaximumSaveBytes)
-        {
-            throw new InvalidDataException(
-                $"Clan save exceeds the {MaximumSaveBytes}-byte limit.");
-        }
-        RegistryData candidate = ParseSave(bytes);
-        PreserveRuntimeMemberState(candidate);
-
-        try
-        {
-            WriteAtomically(saveFile, bytes);
-        }
-        catch
-        {
-            RecoverPersistedStateAfterSaveFailure();
-            throw;
-        }
-
-        SwapState(candidate);
-        _directoryInvalidationPending = true;
-        ClanApi.NotifyRegistryChanged();
-        return ClansById[clan.ClanId];
-    }
-
     private static string Leave(ClanPlayerRef actor, string requestedClanId)
     {
         ClanState? clan = FindEffectiveClan(actor, requestedClanId);

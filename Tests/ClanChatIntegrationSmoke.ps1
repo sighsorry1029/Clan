@@ -14,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 $clanRoot = Split-Path -Parent $PSScriptRoot
 $apiSource = Get-Content -LiteralPath (Join-Path $clanRoot 'ClanApi.cs') -Raw
 $registrySource = Get-Content -LiteralPath (Join-Path $clanRoot 'ClanRegistry.cs') -Raw
+$persistenceSource = Get-Content -LiteralPath (Join-Path $clanRoot 'ClanRegistry.Persistence.cs') -Raw
 $rpcSource = Get-Content -LiteralPath (Join-Path $clanRoot 'ClanRpc.cs') -Raw
 $modelSource = Get-Content -LiteralPath (Join-Path $clanRoot 'ClanModels.cs') -Raw
 
@@ -89,7 +90,7 @@ Assert-SourceOrder (Get-SourceBlock $apiSource 'internal static void Dispose()')
 if ([regex]::Matches($registrySource, 'ClanApi\.NotifyServerChatAccepted\(').Count -ne 1) {
     throw 'Accepted chat must have exactly one registry event emission site.'
 }
-Assert-SourceOrder (Get-SourceBlock $registrySource 'private static ClanState CommitClanProfile(') @(
+Assert-SourceOrder (Get-SourceBlock $persistenceSource 'private static ClanState CommitClanProfile(') @(
     'RegistryData candidate = ParseSave(bytes);',
     'PreserveRuntimeMemberState(candidate);',
     'WriteAtomically(saveFile, bytes);',
