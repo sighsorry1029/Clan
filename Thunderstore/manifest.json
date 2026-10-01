@@ -1,6 +1,6 @@
 {
   "name": "Clan",
-  "version_number": "1.1.2",
+  "version_number": "1.1.3",
   "website_url": "https://discord.gg/jkcJCq2sK5",
   "description": "Build your Valheim clan with Leader, Officer, Member, and Guest roles, clan chat, a movable health HUD, private map pings, shared positions, custom emblems, and animated GIF emoji. Apply, invite, manage members, and stay connected across Valheim.",
   "dependencies": [
